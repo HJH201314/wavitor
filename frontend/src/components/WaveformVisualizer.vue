@@ -38,6 +38,17 @@ const isDragging = ref(false)
 // Real-time position for smooth animation (updated in animation loop)
 const realTimePosition = ref(0)
 
+// Edit mode for adding/removing beats
+const isEditMode = ref(false)
+
+// Beat dragging state
+const isDraggingBeat = ref(false)
+const draggingBeatTime = ref<number | null>(null)
+const draggingBeatType = ref<'manual' | 'detected' | null>(null)
+
+// Total beats count (detected + manual)
+const totalBeatsCount = computed(() => audioStore.getAllBeats().length)
+
 // Pixels per second for rendering
 const pixelsPerSecond = computed(() => canvasWidth.value / windowDuration.value)
 
@@ -191,13 +202,19 @@ function drawWaveform() {
   const halfHeight = canvasHeight / 2
   
   // Draw beat markers first (behind waveform)
-  if (audioStore.showBeats && audioStore.bpmInfo?.beats) {
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.3)' // Light red
-    ctx.lineWidth = 1
+  if (audioStore.showBeats) {
+    const allBeats = audioStore.getAllBeats()
+    const manualBeats = new Set(audioStore.manualBeats)
     
-    for (const beatTime of audioStore.bpmInfo.beats) {
+    for (const beatTime of allBeats) {
       if (beatTime >= startTime && beatTime <= endTime) {
         const x = ((beatTime - startTime) / (endTime - startTime)) * canvasWidth.value
+        const isManual = manualBeats.has(beatTime)
+        
+        // Different colors for manual vs detected beats
+        ctx.strokeStyle = isManual ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.3)'
+        ctx.lineWidth = isManual ? 2 : 1
+        
         ctx.beginPath()
         ctx.moveTo(x, 0)
         ctx.lineTo(x, canvasHeight)
@@ -227,12 +244,18 @@ function drawWaveform() {
   }
   
   // Draw beat markers on top (more visible dots at bottom)
-  if (audioStore.showBeats && audioStore.bpmInfo?.beats) {
-    ctx.fillStyle = '#ef4444' // Red
+  if (audioStore.showBeats) {
+    const allBeats = audioStore.getAllBeats()
+    const manualBeats = new Set(audioStore.manualBeats)
     
-    for (const beatTime of audioStore.bpmInfo.beats) {
+    for (const beatTime of allBeats) {
       if (beatTime >= startTime && beatTime <= endTime) {
         const x = ((beatTime - startTime) / (endTime - startTime)) * canvasWidth.value
+        const isManual = manualBeats.has(beatTime)
+        
+        // Green for manual, red for detected
+        ctx.fillStyle = isManual ? '#22c55e' : '#ef4444'
+        
         // Draw small triangle/marker at bottom
         ctx.beginPath()
         ctx.moveTo(x, canvasHeight - 16)
@@ -273,21 +296,135 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+// Find beat near a given time
+function findNearbyBeat(time: number, tolerance: number = 0.08): { time: number; type: 'manual' | 'detected' } | null {
+  // Check manual beats first (they take priority)
+  const nearbyManual = audioStore.manualBeats.find(t => Math.abs(t - time) < tolerance)
+  if (nearbyManual !== undefined) {
+    return { time: nearbyManual, type: 'manual' }
+  }
+  
+  // Check detected beats
+  const detectedBeats = audioStore.getActiveDetectedBeats()
+  const nearbyDetected = detectedBeats.find(t => Math.abs(t - time) < tolerance)
+  if (nearbyDetected !== undefined) {
+    return { time: nearbyDetected, type: 'detected' }
+  }
+  
+  return null
+}
+
+// Convert x position to time
+function xToTime(x: number): number {
+  const { startTime, endTime } = getVisibleTimeRange()
+  const percent = x / canvasWidth.value
+  return startTime + percent * (endTime - startTime)
+}
+
+function handleCanvasMouseDown(e: MouseEvent) {
+  if (!isEditMode.value) return
+  
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
+  if (!duration || !canvasRef.value) return
+  
+  const rect = canvasRef.value.getBoundingClientRect()
+  const x = e.clientX - rect.left
+  const clickedTime = xToTime(x)
+  
+  // Check if clicking on an existing beat for dragging
+  const nearbyBeat = findNearbyBeat(clickedTime)
+  
+  if (nearbyBeat) {
+    // Start dragging the beat
+    isDraggingBeat.value = true
+    draggingBeatTime.value = nearbyBeat.time
+    draggingBeatType.value = nearbyBeat.type
+    
+    document.addEventListener('mousemove', handleCanvasMouseMove)
+    document.addEventListener('mouseup', handleCanvasMouseUp)
+    
+    e.preventDefault() // Prevent click from firing immediately
+  }
+}
+
+function handleCanvasMouseMove(e: MouseEvent) {
+  if (!isDraggingBeat.value || !canvasRef.value || draggingBeatTime.value === null) return
+  
+  const rect = canvasRef.value.getBoundingClientRect()
+  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
+  const newTime = xToTime(x)
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
+  const clampedTime = Math.max(0, Math.min(duration, newTime))
+  
+  // Move the beat
+  audioStore.moveBeat(draggingBeatTime.value, clampedTime)
+  draggingBeatTime.value = clampedTime
+  draggingBeatType.value = 'manual' // After moving, it becomes a manual beat
+  
+  drawWaveform()
+}
+
+function handleCanvasMouseUp() {
+  isDraggingBeat.value = false
+  draggingBeatTime.value = null
+  draggingBeatType.value = null
+  
+  document.removeEventListener('mousemove', handleCanvasMouseMove)
+  document.removeEventListener('mouseup', handleCanvasMouseUp)
+}
+
+function handleCanvasContextMenu(e: MouseEvent) {
+  if (!isEditMode.value) return
+  
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
+  if (!duration || !canvasRef.value) return
+  
+  e.preventDefault() // Prevent default context menu
+  
+  const rect = canvasRef.value.getBoundingClientRect()
+  const x = e.clientX - rect.left
+  const clickedTime = xToTime(x)
+  
+  // Check if right-clicking on an existing beat
+  const nearbyBeat = findNearbyBeat(clickedTime)
+  
+  if (nearbyBeat) {
+    // Delete the beat
+    if (nearbyBeat.type === 'manual') {
+      audioStore.removeManualBeat(nearbyBeat.time)
+    } else if (nearbyBeat.type === 'detected') {
+      audioStore.removeDetectedBeat(nearbyBeat.time)
+    }
+    drawWaveform()
+  }
+}
+
 function handleCanvasClick(e: MouseEvent) {
   const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
   if (!duration || !canvasRef.value) return
   
   const rect = canvasRef.value.getBoundingClientRect()
   const x = e.clientX - rect.left
-  const percent = x / rect.width
+  const clickedTime = xToTime(x)
+  const clampedTime = Math.max(0, Math.min(duration, clickedTime))
   
-  const { startTime, endTime } = getVisibleTimeRange()
+  // In edit mode, add beats (removal is handled in mouseup)
+  if (isEditMode.value) {
+    // Check if clicking near an existing beat - if so, do nothing (handled by mousedown/mouseup)
+    const nearbyBeat = findNearbyBeat(clampedTime)
+    
+    if (!nearbyBeat) {
+      // Add a new beat only if not near an existing beat
+      audioStore.addManualBeat(clampedTime)
+      drawWaveform()
+    }
+    return
+  }
   
-  const newTime = startTime + percent * (endTime - startTime)
-  const clampedTime = Math.max(0, Math.min(duration, newTime))
-  
+  // Normal mode: seek to position
   // Reset view offset when clicking to seek
   viewOffset.value = 0
+  autoFollow.value = true
   audioStore.setCurrentTime(clampedTime)
   
   const event = new CustomEvent('seek', { detail: clampedTime })
@@ -406,6 +543,8 @@ watch(() => audioStore.audioFile, () => {
     localAudioBuffer.value = null
     viewOffset.value = 0
     autoFollow.value = true
+    fixedViewCenterTime.value = 0
+    isEditMode.value = false
     setTimeout(() => {
       updateCanvasSize()
       loadAudioBuffer()
@@ -429,7 +568,7 @@ watch(() => audioStore.currentTime, () => {
   }
 })
 
-watch(() => [audioStore.bpmInfo, audioStore.showBeats], () => {
+watch(() => [audioStore.bpmInfo, audioStore.showBeats, audioStore.manualBeats.length, audioStore.deletedDetectedBeats.length], () => {
   if (waveformData.value && waveformData.value.length > 0) {
     drawWaveform()
   }
@@ -484,6 +623,8 @@ onUnmounted(() => {
   window.removeEventListener('resize', updateCanvasSize)
   document.removeEventListener('mousemove', handleScrollbarMouseMove)
   document.removeEventListener('mouseup', handleScrollbarMouseUp)
+  document.removeEventListener('mousemove', handleCanvasMouseMove)
+  document.removeEventListener('mouseup', handleCanvasMouseUp)
 })
 </script>
 
@@ -502,12 +643,15 @@ onUnmounted(() => {
           <div class="animate-spin rounded-full h-3 w-3 border border-blue-500 border-t-transparent"></div>
           <span>检测节拍...</span>
         </div>
-        <div v-else-if="audioStore.bpmInfo && audioStore.bpmInfo.bpm > 0" class="flex items-center gap-3">
-          <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">
+        <div v-else class="flex items-center gap-3">
+          <span v-if="audioStore.bpmInfo && audioStore.bpmInfo.bpm > 0" class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">
             平均 {{ audioStore.bpmInfo.bpm }} BPM
           </span>
           <span class="text-xs text-gray-400">
-            {{ audioStore.bpmInfo.beats.length }} 个节拍
+            {{ totalBeatsCount }} 个节拍
+            <span v-if="audioStore.manualBeats.length > 0" class="text-green-600">
+              ({{ audioStore.manualBeats.length }} 手动)
+            </span>
           </span>
           <button
             class="text-xs px-2 py-1 rounded transition-colors"
@@ -516,10 +660,27 @@ onUnmounted(() => {
           >
             {{ audioStore.showBeats ? '隐藏节拍' : '显示节拍' }}
           </button>
+          <button
+            class="text-xs px-2 py-1 rounded transition-colors"
+            :class="isEditMode ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            @click="isEditMode = !isEditMode"
+          >
+            {{ isEditMode ? '退出编辑' : '编辑节拍' }}
+          </button>
+          <button
+            v-if="totalBeatsCount > 0"
+            class="text-xs px-2 py-1 bg-purple-100 text-purple-600 rounded hover:bg-purple-200 transition-colors"
+            @click="audioStore.downloadBeatsAsJSON"
+          >
+            导出节拍
+          </button>
         </div>
       </div>
       
       <div class="flex items-center gap-3 text-xs text-gray-400">
+        <span v-if="isEditMode" class="text-green-600 font-medium">
+          点击添加节拍 | 右键删除节拍 | 拖拽节拍移动
+        </span>
         <button
           v-if="!autoFollow"
           class="px-2 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 transition-colors"
@@ -544,8 +705,13 @@ onUnmounted(() => {
       v-show="!isLoading && waveformData && waveformData.length > 0"
       ref="canvasRef"
       :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
-      class="cursor-pointer w-full bg-gray-50 rounded-t-lg"
+      :class="[
+        'w-full bg-gray-50 rounded-t-lg transition-all select-none',
+        isEditMode ? 'cursor-crosshair ring-2 ring-green-400' : 'cursor-pointer'
+      ]"
+      @mousedown="handleCanvasMouseDown"
       @click="handleCanvasClick"
+      @contextmenu="handleCanvasContextMenu"
       @wheel="handleWheel"
     />
     
