@@ -16,12 +16,40 @@ function handleSeek(e: CustomEvent) {
   }
 }
 
+function handleKeydown(e: KeyboardEvent) {
+  // Space key to toggle play/pause
+  if (e.code === 'Space' && audioStore.audioUrl) {
+    // Prevent default scroll behavior
+    e.preventDefault()
+    
+    const audio = document.querySelector('audio') as HTMLAudioElement
+    if (!audio) return
+    
+    // Initialize audio context on first play if needed
+    if (!audioStore.sourceNode) {
+      audioStore.initAudioContext()
+    }
+    
+    if (audioStore.audioContext?.state === 'suspended') {
+      audioStore.audioContext.resume()
+    }
+    
+    if (audioStore.isPlaying) {
+      audio.pause()
+    } else {
+      audio.play()
+    }
+  }
+}
+
 onMounted(() => {
   window.addEventListener('seek', handleSeek as EventListener)
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onUnmounted(() => {
   window.removeEventListener('seek', handleSeek as EventListener)
+  window.removeEventListener('keydown', handleKeydown)
   audioStore.reset()
 })
 </script>

@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useAudioStore } from '../stores/audio'
 
 const audioStore = useAudioStore()
 const audioRef = ref<HTMLAudioElement | null>(null)
+
+// Use audioUrl as key to force audio element recreation when file changes
+const audioKey = computed(() => audioStore.audioUrl)
 
 const formattedCurrentTime = computed(() => formatTime(audioStore.currentTime))
 const formattedDuration = computed(() => formatTime(audioStore.duration))
@@ -92,8 +95,13 @@ function skipForward() {
 }
 
 watch(() => audioStore.audioUrl, (newUrl) => {
-  if (audioRef.value && newUrl) {
-    audioRef.value.load()
+  // Audio element will be recreated via :key, need to wait for next tick
+  if (newUrl) {
+    nextTick(() => {
+      if (audioRef.value) {
+        audioStore.setAudioElement(audioRef.value)
+      }
+    })
   }
 })
 
@@ -114,6 +122,7 @@ onUnmounted(() => {
 <template>
   <div v-if="audioStore.audioUrl" class="bg-white rounded-xl p-6 shadow-sm">
     <audio
+      :key="audioKey"
       ref="audioRef"
       :src="audioStore.audioUrl"
       @timeupdate="handleTimeUpdate"
