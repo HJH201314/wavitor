@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { detectBPM, type BeatInfo } from '../utils/bpmDetector'
+import { useWorkspaceStore } from './workspace'
 
 export const useAudioStore = defineStore('audio', () => {
+  const workspaceStore = useWorkspaceStore()
   const audioFile = ref<File | null>(null)
   const audioUrl = ref<string>('')
   const isPlaying = ref(false)
@@ -47,9 +49,11 @@ export const useAudioStore = defineStore('audio', () => {
     duration.value = 0
     isPlaying.value = false
     
-    // Reset beat editing data
-    manualBeats.value = []
-    deletedDetectedBeats.value = []
+    // Load or create workspace for this file
+    const workspace = workspaceStore.loadWorkspace(file)
+    manualBeats.value = [...workspace.manualBeats]
+    deletedDetectedBeats.value = [...workspace.deletedDetectedBeats]
+    
     bpmInfo.value = null
   }
 
@@ -130,6 +134,9 @@ export const useAudioStore = defineStore('audio', () => {
     if (!exists) {
       manualBeats.value.push(time)
       manualBeats.value.sort((a, b) => a - b)
+      
+      // Update workspace
+      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '添加节拍')
     }
   }
 
@@ -139,6 +146,9 @@ export const useAudioStore = defineStore('audio', () => {
     const index = manualBeats.value.findIndex(t => Math.abs(t - time) < tolerance)
     if (index !== -1) {
       manualBeats.value.splice(index, 1)
+      
+      // Update workspace
+      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '删除节拍')
     }
   }
 
@@ -148,6 +158,9 @@ export const useAudioStore = defineStore('audio', () => {
     const exists = deletedDetectedBeats.value.some(t => Math.abs(t - time) < tolerance)
     if (!exists) {
       deletedDetectedBeats.value.push(time)
+      
+      // Update workspace
+      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '删除检测到的节拍')
     }
   }
 
@@ -157,16 +170,21 @@ export const useAudioStore = defineStore('audio', () => {
     return deletedDetectedBeats.value.some(t => Math.abs(t - time) < tolerance)
   }
 
-  // Move a beat from one time to another
-  function moveBeat(oldTime: number, newTime: number) {
+  // Move a beat from one time to another (internal, no history)
+  function moveBeatInternal(oldTime: number, newTime: number): boolean {
     const tolerance = 0.05
     
     // Check if it's a manual beat
     const manualIndex = manualBeats.value.findIndex(t => Math.abs(t - oldTime) < tolerance)
     if (manualIndex !== -1) {
       manualBeats.value.splice(manualIndex, 1)
-      addManualBeat(newTime)
-      return
+      // Avoid duplicate beats
+      const exists = manualBeats.value.some(t => Math.abs(t - newTime) < tolerance)
+      if (!exists) {
+        manualBeats.value.push(newTime)
+        manualBeats.value.sort((a, b) => a - b)
+      }
+      return true
     }
     
     // Check if it's a detected beat
@@ -174,20 +192,40 @@ export const useAudioStore = defineStore('audio', () => {
     const isDetected = detectedBeats.some(t => Math.abs(t - oldTime) < tolerance)
     if (isDetected) {
       // Remove detected beat and add as manual beat at new position
-      removeDetectedBeat(oldTime)
-      addManualBeat(newTime)
+      const exists = deletedDetectedBeats.value.some(t => Math.abs(t - oldTime) < tolerance)
+      if (!exists) {
+        deletedDetectedBeats.value.push(oldTime)
+      }
+      const beatExists = manualBeats.value.some(t => Math.abs(t - newTime) < tolerance)
+      if (!beatExists) {
+        manualBeats.value.push(newTime)
+        manualBeats.value.sort((a, b) => a - b)
+      }
+      return true
+    }
+    
+    return false
+  }
+
+  // Move a beat from one time to another (with history)
+  function moveBeat(oldTime: number, newTime: number) {
+    if (moveBeatInternal(oldTime, newTime)) {
+      // Update workspace with history
+      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '移动节拍')
     }
   }
 
   // Clear all manual beats
   function clearManualBeats() {
     manualBeats.value = []
+    workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '清除手动节拍')
   }
 
   // Reset all beat edits (clear manual beats and restore deleted detected beats)
   function resetBeatEdits() {
     manualBeats.value = []
     deletedDetectedBeats.value = []
+    workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '重置所有编辑')
   }
 
   // Get active detected beats (excluding deleted ones)
@@ -233,6 +271,35 @@ export const useAudioStore = defineStore('audio', () => {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  // Import beats from file or JSON
+  function importBeats(beatsData: number[] | string): { success: boolean; message: string } {
+    const result = workspaceStore.importBeats(beatsData)
+    
+    if (result.success && workspaceStore.currentWorkspace) {
+      // Sync with current store state
+      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
+      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+    }
+    
+    return result
+  }
+
+  // Undo last action
+  function undo() {
+    if (workspaceStore.undo() && workspaceStore.currentWorkspace) {
+      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
+      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+    }
+  }
+
+  // Redo last undone action
+  function redo() {
+    if (workspaceStore.redo() && workspaceStore.currentWorkspace) {
+      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
+      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+    }
   }
 
   function reset() {
@@ -293,6 +360,7 @@ export const useAudioStore = defineStore('audio', () => {
     removeDetectedBeat,
     isDetectedBeatDeleted,
     moveBeat,
+    moveBeatInternal,
     clearManualBeats,
     resetBeatEdits,
     getActiveDetectedBeats,
@@ -300,6 +368,9 @@ export const useAudioStore = defineStore('audio', () => {
     exportBeatsAsMilliseconds,
     exportBeatsAsJSON,
     downloadBeatsAsJSON,
+    importBeats,
+    undo,
+    redo,
     reset,
   }
 })

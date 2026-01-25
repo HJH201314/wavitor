@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useAudioStore } from '../stores/audio'
+import { useWorkspaceStore } from '../stores/workspace'
 
 const audioStore = useAudioStore()
+const workspaceStore = useWorkspaceStore()
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
 const waveformData = ref<Float32Array | null>(null)
 const isLoading = ref(false)
 const localAudioBuffer = ref<AudioBuffer | null>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const canvasWidth = ref(800)
 const canvasHeight = 150
@@ -45,6 +48,7 @@ const isEditMode = ref(false)
 const isDraggingBeat = ref(false)
 const draggingBeatTime = ref<number | null>(null)
 const draggingBeatType = ref<'manual' | 'detected' | null>(null)
+const draggingBeatOriginalTime = ref<number | null>(null) // Store original position for history
 
 // Total beats count (detected + manual)
 const totalBeatsCount = computed(() => audioStore.getAllBeats().length)
@@ -338,6 +342,7 @@ function handleCanvasMouseDown(e: MouseEvent) {
     // Start dragging the beat
     isDraggingBeat.value = true
     draggingBeatTime.value = nearbyBeat.time
+    draggingBeatOriginalTime.value = nearbyBeat.time // Store original position
     draggingBeatType.value = nearbyBeat.type
     
     document.addEventListener('mousemove', handleCanvasMouseMove)
@@ -356,8 +361,8 @@ function handleCanvasMouseMove(e: MouseEvent) {
   const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
   const clampedTime = Math.max(0, Math.min(duration, newTime))
   
-  // Move the beat
-  audioStore.moveBeat(draggingBeatTime.value, clampedTime)
+  // Move the beat (without recording history)
+  audioStore.moveBeatInternal(draggingBeatTime.value, clampedTime)
   draggingBeatTime.value = clampedTime
   draggingBeatType.value = 'manual' // After moving, it becomes a manual beat
   
@@ -365,8 +370,18 @@ function handleCanvasMouseMove(e: MouseEvent) {
 }
 
 function handleCanvasMouseUp() {
+  // Record history only once when drag ends
+  if (isDraggingBeat.value && draggingBeatOriginalTime.value !== null && draggingBeatTime.value !== null) {
+    // Check if beat actually moved
+    if (Math.abs(draggingBeatOriginalTime.value - draggingBeatTime.value) > 0.01) {
+      // Record final position in history
+      workspaceStore.updateBeats(audioStore.manualBeats, audioStore.deletedDetectedBeats, '移动节拍')
+    }
+  }
+  
   isDraggingBeat.value = false
   draggingBeatTime.value = null
+  draggingBeatOriginalTime.value = null
   draggingBeatType.value = null
   
   document.removeEventListener('mousemove', handleCanvasMouseMove)
@@ -474,32 +489,26 @@ function handleWheel(e: WheelEvent) {
   }
 }
 
-function updateViewFromScrollPosition(clientX: number, scrollbarElement: HTMLElement) {
-  const rect = scrollbarElement.getBoundingClientRect()
-  const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
-  const percent = x / rect.width
-  
-  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
-  if (duration === 0) return
-  
-  const targetTime = percent * duration
-  const halfWindow = windowDuration.value / 2
-  
-  // Clamp target time to valid range
-  const clampedCenterTime = Math.max(halfWindow, Math.min(duration - halfWindow, targetTime))
-  
-  // Set fixed view center time and disable auto-follow
-  fixedViewCenterTime.value = clampedCenterTime
-  autoFollow.value = false
-  drawWaveform()
-}
-
 let scrollbarElement: HTMLElement | null = null
+let dragStartX: number = 0
+let dragStartCenterTime: number = 0
 
 function handleScrollbarMouseDown(e: MouseEvent) {
   isDragging.value = true
   scrollbarElement = e.currentTarget as HTMLElement
-  updateViewFromScrollPosition(e.clientX, scrollbarElement)
+  dragStartX = e.clientX
+  
+  // Record initial center time
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
+  if (autoFollow.value) {
+    dragStartCenterTime = realTimePosition.value + viewOffset.value
+  } else {
+    dragStartCenterTime = fixedViewCenterTime.value
+  }
+  
+  // Disable auto-follow when starting drag
+  autoFollow.value = false
+  fixedViewCenterTime.value = dragStartCenterTime
   
   // Add document-level listeners for drag
   document.addEventListener('mousemove', handleScrollbarMouseMove)
@@ -509,7 +518,29 @@ function handleScrollbarMouseDown(e: MouseEvent) {
 function handleScrollbarMouseMove(e: MouseEvent) {
   if (!isDragging.value || !scrollbarElement) return
   e.preventDefault()
-  updateViewFromScrollPosition(e.clientX, scrollbarElement)
+  
+  const rect = scrollbarElement.getBoundingClientRect()
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
+  if (duration === 0) return
+  
+  // Calculate delta in pixels and convert to time
+  const deltaX = e.clientX - dragStartX
+  const deltaTime = (deltaX / rect.width) * duration
+  
+  const halfWindow = windowDuration.value / 2
+  const minCenter = halfWindow
+  const maxCenter = duration - halfWindow
+  const rawCenterTime = dragStartCenterTime + deltaTime
+  const newCenterTime = Math.max(minCenter, Math.min(maxCenter, rawCenterTime))
+  
+  // If clamped at boundary, reset the drag start point to prevent lag
+  if (rawCenterTime !== newCenterTime) {
+    dragStartX = e.clientX
+    dragStartCenterTime = newCenterTime
+  }
+  
+  fixedViewCenterTime.value = newCenterTime
+  drawWaveform()
 }
 
 function handleScrollbarMouseUp() {
@@ -596,6 +627,66 @@ function stopAnimationLoop() {
   }
 }
 
+// Handle undo
+function handleUndo() {
+  audioStore.undo()
+  drawWaveform()
+}
+
+// Handle redo
+function handleRedo() {
+  audioStore.redo()
+  drawWaveform()
+}
+
+// Handle import beats
+function handleImportBeats() {
+  fileInputRef.value?.click()
+}
+
+// Handle file input change
+async function handleFileInputChange(e: Event) {
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0]
+  
+  if (!file) return
+  
+  try {
+    const text = await file.text()
+    const result = audioStore.importBeats(text)
+    
+    if (result.success) {
+      alert(result.message)
+      drawWaveform()
+    } else {
+      alert(`导入失败: ${result.message}`)
+    }
+  } catch (error) {
+    alert(`读取文件失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    // Reset input
+    target.value = ''
+  }
+}
+
+// Keyboard shortcuts
+function handleKeyDown(e: KeyboardEvent) {
+  // Ctrl/Cmd + Z = Undo
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    e.preventDefault()
+    if (workspaceStore.canUndo) {
+      handleUndo()
+    }
+  }
+  // Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y = Redo
+  else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    e.preventDefault()
+    if (workspaceStore.canRedo) {
+      handleRedo()
+    }
+  }
+}
+
 watch(() => audioStore.isPlaying, (isPlaying) => {
   if (isPlaying) {
     // Reset to follow when starting playback
@@ -612,6 +703,7 @@ watch(() => audioStore.isPlaying, (isPlaying) => {
 onMounted(() => {
   updateCanvasSize()
   window.addEventListener('resize', updateCanvasSize)
+  window.addEventListener('keydown', handleKeyDown)
   
   if (audioStore.audioFile && !waveformData.value) {
     loadAudioBuffer()
@@ -621,6 +713,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopAnimationLoop()
   window.removeEventListener('resize', updateCanvasSize)
+  window.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('mousemove', handleScrollbarMouseMove)
   document.removeEventListener('mouseup', handleScrollbarMouseUp)
   document.removeEventListener('mousemove', handleCanvasMouseMove)
@@ -634,25 +727,45 @@ onUnmounted(() => {
     ref="containerRef"
     class="bg-white rounded-xl p-6 shadow-sm"
   >
-    <div class="flex items-center justify-between mb-4">
-      <div class="flex items-center gap-4">
-        <h3 class="text-sm font-medium text-gray-500">波形图</h3>
-        
-        <!-- BPM Info -->
-        <div v-if="audioStore.isDetectingBPM" class="flex items-center gap-2 text-xs text-gray-400">
-          <div class="animate-spin rounded-full h-3 w-3 border border-blue-500 border-t-transparent"></div>
-          <span>检测节拍...</span>
-        </div>
-        <div v-else class="flex items-center gap-3">
-          <span v-if="audioStore.bpmInfo && audioStore.bpmInfo.bpm > 0" class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">
-            平均 {{ audioStore.bpmInfo.bpm }} BPM
-          </span>
-          <span class="text-xs text-gray-400">
-            {{ totalBeatsCount }} 个节拍
-            <span v-if="audioStore.manualBeats.length > 0" class="text-green-600">
-              ({{ audioStore.manualBeats.length }} 手动)
+    <!-- Header with controls - now wrapped for better responsiveness -->
+    <div class="mb-4">
+      <div class="flex items-start justify-between gap-4 mb-3">
+        <div class="flex items-center gap-4 flex-wrap">
+          <h3 class="text-sm font-medium text-gray-500">波形图</h3>
+          
+          <!-- BPM Info -->
+          <div v-if="audioStore.isDetectingBPM" class="flex items-center gap-2 text-xs text-gray-400">
+            <div class="animate-spin rounded-full h-3 w-3 border border-blue-500 border-t-transparent"></div>
+            <span>检测节拍...</span>
+          </div>
+          <div v-else class="flex items-center gap-2 flex-wrap">
+            <span v-if="audioStore.bpmInfo && audioStore.bpmInfo.bpm > 0" class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded whitespace-nowrap">
+              平均 {{ audioStore.bpmInfo.bpm }} BPM
             </span>
-          </span>
+            <span class="text-xs text-gray-400 whitespace-nowrap">
+              {{ totalBeatsCount }} 个节拍
+              <span v-if="audioStore.manualBeats.length > 0" class="text-green-600">
+                ({{ audioStore.manualBeats.length }} 手动)
+              </span>
+            </span>
+          </div>
+        </div>
+        
+        <div class="flex items-center gap-2 text-xs text-gray-400 flex-shrink-0">
+          <button
+            v-if="!autoFollow"
+            class="px-2 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 transition-colors whitespace-nowrap"
+            @click="resetView"
+          >
+            回到播放
+          </button>
+          <span class="whitespace-nowrap">窗口: {{ windowDuration }}s</span>
+        </div>
+      </div>
+      
+      <!-- Action buttons row -->
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap">
           <button
             class="text-xs px-2 py-1 rounded transition-colors"
             :class="audioStore.showBeats ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-500'"
@@ -674,23 +787,42 @@ onUnmounted(() => {
           >
             导出节拍
           </button>
+          <button
+            class="text-xs px-2 py-1 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 transition-colors"
+            @click="handleImportBeats"
+          >
+            导入节拍
+          </button>
+          
+          <!-- Undo/Redo buttons -->
+          <div class="flex items-center gap-1 border-l border-gray-300 pl-2 ml-1">
+            <button
+              :disabled="!workspaceStore.canUndo"
+              class="text-xs px-2 py-1 rounded transition-colors"
+              :class="workspaceStore.canUndo ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : 'bg-gray-50 text-gray-300 cursor-not-allowed'"
+              @click="handleUndo"
+              title="撤销 (Ctrl+Z)"
+            >
+              ↶
+            </button>
+            <button
+              :disabled="!workspaceStore.canRedo"
+              class="text-xs px-2 py-1 rounded transition-colors"
+              :class="workspaceStore.canRedo ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : 'bg-gray-50 text-gray-300 cursor-not-allowed'"
+              @click="handleRedo"
+              title="重做 (Ctrl+Y)"
+            >
+              ↷
+            </button>
+          </div>
         </div>
-      </div>
-      
-      <div class="flex items-center gap-3 text-xs text-gray-400">
-        <span v-if="isEditMode" class="text-green-600 font-medium">
-          点击添加节拍 | 右键删除节拍 | 拖拽节拍移动
-        </span>
-        <button
-          v-if="!autoFollow"
-          class="px-2 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 transition-colors"
-          @click="resetView"
-        >
-          回到播放位置
-        </button>
-        <span>窗口: {{ windowDuration }}s</span>
-        <span class="text-gray-300">|</span>
-        <span>Ctrl+滚轮缩放</span>
+        
+        <div class="text-xs flex items-center gap-3">
+          <span v-if="isEditMode" class="text-green-600 font-medium whitespace-nowrap">
+            左键添加 | 右键删除 | 拖拽移动
+          </span>
+          <span class="text-gray-400 whitespace-nowrap">Ctrl+滚轮缩放</span>
+        </div>
       </div>
     </div>
     
@@ -740,6 +872,15 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+    
+    <!-- Hidden file input for importing beats -->
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".json,application/json"
+      class="hidden"
+      @change="handleFileInputChange"
+    />
     
     <div 
       v-if="!isLoading && (!waveformData || waveformData.length === 0)" 
