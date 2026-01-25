@@ -748,6 +748,9 @@ onUnmounted(() => {
                 ({{ audioStore.manualBeats.length }} 手动)
               </span>
             </span>
+            <span v-if="audioStore.autoCorrectBeats" class="px-2 py-1 bg-cyan-100 text-cyan-700 text-xs font-medium rounded whitespace-nowrap">
+              🎯 智能修正已启用
+            </span>
           </div>
         </div>
         
@@ -779,6 +782,23 @@ onUnmounted(() => {
             @click="isEditMode = !isEditMode"
           >
             {{ isEditMode ? '退出编辑' : '编辑节拍' }}
+          </button>
+          <button
+            v-if="audioStore.manualBeats.length >= 3"
+            class="text-xs px-2 py-1 rounded transition-colors relative group"
+            :class="audioStore.autoCorrectBeats ? 'bg-cyan-500 text-white' : 'bg-cyan-100 text-cyan-600 hover:bg-cyan-200'"
+            @click="audioStore.toggleAutoCorrectBeats"
+            title="基于手动节拍自动修正检测到的节拍"
+          >
+            <span class="flex items-center gap-1">
+              <span>{{ audioStore.autoCorrectBeats ? '✓' : '' }}</span>
+              <span>智能修正</span>
+            </span>
+            <!-- Tooltip -->
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
+              学习手动节拍特征并自动修正检测节拍
+              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-800"></div>
+            </div>
           </button>
           <button
             v-if="totalBeatsCount > 0"
@@ -820,6 +840,9 @@ onUnmounted(() => {
         <div class="text-xs flex items-center gap-3">
           <span v-if="isEditMode" class="text-green-600 font-medium whitespace-nowrap">
             左键添加 | 右键删除 | 拖拽移动
+          </span>
+          <span v-else-if="audioStore.manualBeats.length >= 1 && audioStore.manualBeats.length < 3" class="text-cyan-600 whitespace-nowrap">
+            💡 添加 {{ 3 - audioStore.manualBeats.length }} 个以上手动节拍可启用智能修正
           </span>
           <span class="text-gray-400 whitespace-nowrap">Ctrl+滚轮缩放</span>
         </div>

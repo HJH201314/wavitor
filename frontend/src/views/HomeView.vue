@@ -5,6 +5,7 @@ import AudioUploader from '../components/AudioUploader.vue'
 import AudioPlayer from '../components/AudioPlayer.vue'
 import WaveformVisualizer from '../components/WaveformVisualizer.vue'
 import FrequencyVisualizer from '../components/FrequencyVisualizer.vue'
+import BPMCurveChart from '../components/BPMCurveChart.vue'
 import WorkspaceList from '../components/WorkspaceList.vue'
 
 const audioStore = useAudioStore()
@@ -87,6 +88,7 @@ onUnmounted(() => {
           <div v-if="audioStore.audioUrl" class="flex flex-col gap-6">
             <AudioPlayer />
             <WaveformVisualizer />
+            <BPMCurveChart />
             <FrequencyVisualizer />
           </div>
           
