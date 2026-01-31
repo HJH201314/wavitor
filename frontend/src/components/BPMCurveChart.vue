@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import { useAudioStore } from '../stores/audio';
 
 const audioStore = useAudioStore();
@@ -368,8 +368,14 @@ function adjustHeight(delta: number) {
 }
 
 // 监听数据变化
-watch(() => [audioStore.bpmInfo, audioStore.currentTime], () => {
-  drawChart();
+watch(() => [audioStore.bpmInfo, audioStore.currentTime], async () => {
+  // 如果是 bpmInfo 首次加载，确保尺寸正确
+  if (audioStore.bpmInfo && canvasWidth.value === 800) {
+    await nextTick();
+    updateCanvasSize();
+  } else {
+    drawChart();
+  }
 }, { deep: true });
 
 // 动画循环（仅在播放时）
@@ -399,12 +405,17 @@ watch(() => audioStore.isPlaying, (isPlaying) => {
   }
 });
 
-onMounted(() => {
+onMounted(async () => {
+  // 等待 DOM 完全渲染后再更新尺寸
+  await nextTick();
   updateCanvasSize();
   window.addEventListener('resize', updateCanvasSize);
   
-  if (audioStore.bpmInfo) {
-    drawChart();
+  // 如果首次更新后宽度仍然不对，延迟再试一次
+  if (containerRef.value && canvasWidth.value === 800) {
+    setTimeout(() => {
+      updateCanvasSize();
+    }, 50);
   }
 });
 
