@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { detectBPM, type BeatInfo } from '../utils/bpmDetector'
 import { useWorkspaceStore } from './workspace'
+import { storageManager } from '../utils/storage'
 
 export const useAudioStore = defineStore('audio', () => {
   const workspaceStore = useWorkspaceStore()
@@ -22,20 +23,13 @@ export const useAudioStore = defineStore('audio', () => {
   const isDetectingBPM = ref(false)
   const showBeats = ref(true)
   
-  // Manual beats (user-added beats)
-  const manualBeats = ref<number[]>([])
-  
-  // Deleted detected beats (user removed from auto-detected)
-  const deletedDetectedBeats = ref<number[]>([])
-  
-  // Auto-correction feature
-  const autoCorrectBeats = ref(false)
-  const correctedBeats = ref<number[]>([]) // Store corrected detected beats
+  // Unified beats array (stored in workspace)
+  const beats = ref<number[]>([])
 
   const fileName = computed(() => audioFile.value?.name || '')
   const progress = computed(() => (duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0))
 
-  function setAudioFile(file: File) {
+  async function setAudioFile(file: File) {
     if (audioUrl.value) {
       URL.revokeObjectURL(audioUrl.value)
     }
@@ -52,13 +46,40 @@ export const useAudioStore = defineStore('audio', () => {
     currentTime.value = 0
     duration.value = 0
     isPlaying.value = false
+    bpmInfo.value = null
     
     // Load or create workspace for this file
-    const workspace = workspaceStore.loadWorkspace(file)
-    manualBeats.value = [...workspace.manualBeats]
-    deletedDetectedBeats.value = [...workspace.deletedDetectedBeats]
-    
-    bpmInfo.value = null
+    try {
+      const workspace = await workspaceStore.loadWorkspace(file)
+      beats.value = [...workspace.beats]
+      
+      // Save audio file to storage
+      const fileId = workspaceStore.generateFileId(file)
+      await storageManager.saveAudioFile(fileId, file)
+      console.log(`Audio file saved to storage: ${file.name}`)
+    } catch (error) {
+      console.error('Failed to load workspace or save audio file:', error)
+    }
+  }
+
+  // Load workspace by fileId (for switching workspaces)
+  async function loadWorkspaceById(fileId: string): Promise<boolean> {
+    try {
+      // Load audio file from storage
+      const file = await storageManager.loadAudioFile(fileId)
+      if (!file) {
+        console.error('Audio file not found in storage:', fileId)
+        return false
+      }
+      
+      // Set the audio file (this will also load the workspace)
+      setAudioFile(file)
+      
+      return true
+    } catch (error) {
+      console.error('Failed to load workspace:', error)
+      return false
+    }
   }
 
   function setAudioElement(el: HTMLAudioElement | null) {
@@ -103,8 +124,14 @@ export const useAudioStore = defineStore('audio', () => {
 
   function setAudioBuffer(buffer: AudioBuffer) {
     audioBuffer.value = buffer
-    // Auto-detect BPM when buffer is set
-    detectBPMFromBuffer(buffer)
+    // Auto-detect BPM only if not already detected for this workspace
+    const workspace = workspaceStore.currentWorkspace
+    if (workspace && !workspace.bpmDetected) {
+      detectBPMFromBuffer(buffer)
+    } else if (workspace && workspace.bpmDetected && workspace.beats.length > 0) {
+      // Recalculate BPM info from existing beats
+      recalculateBPMFromBeats()
+    }
   }
 
   async function detectBPMFromBuffer(buffer: AudioBuffer) {
@@ -119,269 +146,103 @@ export const useAudioStore = defineStore('audio', () => {
       bpmInfo.value = result
       
       console.log(`Detected ${result.beats.length} beats, avg BPM: ${result.bpm}`)
+      
+      // Save detected beats to workspace
+      beats.value = [...result.beats]
+      await workspaceStore.updateBeats(beats.value, 'BPM 检测')
+      await workspaceStore.markBPMDetected()
     } catch (error) {
       console.error('BPM detection failed:', error)
     } finally {
       isDetectingBPM.value = false
     }
   }
+  
+  // Manual re-detection (user triggered)
+  async function redetectBPM() {
+    if (!audioBuffer.value) return
+    await detectBPMFromBuffer(audioBuffer.value)
+  }
 
   function toggleShowBeats() {
     showBeats.value = !showBeats.value
   }
-  
-  function toggleAutoCorrectBeats() {
-    autoCorrectBeats.value = !autoCorrectBeats.value
-    if (autoCorrectBeats.value) {
-      applyAutoCorrection()
-    } else {
-      // Clear corrections when disabled
-      correctedBeats.value = []
-    }
-  }
-  
-  // Learn offset pattern from manual beats and apply to detected beats
-  function applyAutoCorrection() {
-    const detectedBeats = bpmInfo.value?.beats || []
-    if (detectedBeats.length === 0 || manualBeats.value.length < 3) {
-      // Need at least 3 manual beats to learn pattern
-      correctedBeats.value = []
-      return
-    }
-    
-    // Find offsets between manual beats and nearby detected beats
-    const offsets: number[] = []
-    const tolerance = 0.15 // 150ms tolerance to find nearby detected beats
-    
-    for (const manualTime of manualBeats.value) {
-      // Find nearest detected beat
-      let nearestDetected: number | null = null
-      let minDistance = Infinity
-      
-      for (const detectedTime of detectedBeats) {
-        const distance = Math.abs(detectedTime - manualTime)
-        if (distance < tolerance && distance < minDistance) {
-          minDistance = distance
-          nearestDetected = detectedTime
-        }
-      }
-      
-      // If found a nearby detected beat, calculate offset
-      if (nearestDetected !== null) {
-        const offset = manualTime - nearestDetected
-        offsets.push(offset)
-      }
-    }
-    
-    if (offsets.length < 3) {
-      correctedBeats.value = []
-      return
-    }
-    
-    // Calculate median offset (more robust than mean)
-    const sortedOffsets = [...offsets].sort((a, b) => a - b)
-    const medianOffset = sortedOffsets[Math.floor(sortedOffsets.length / 2)]
-    
-    // Calculate standard deviation to filter outliers
-    const mean = offsets.reduce((sum, v) => sum + v, 0) / offsets.length
-    const variance = offsets.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / offsets.length
-    const stdDev = Math.sqrt(variance)
-    
-    // Only use offsets within 1.5 standard deviations
-    const filteredOffsets = offsets.filter(o => Math.abs(o - mean) <= 1.5 * stdDev)
-    
-    if (filteredOffsets.length < 2) {
-      correctedBeats.value = []
-      return
-    }
-    
-    // Calculate final correction offset (average of filtered offsets)
-    const correctionOffset = filteredOffsets.reduce((sum, v) => sum + v, 0) / filteredOffsets.length
-    
-    console.log(`Auto-correction: learned offset = ${(correctionOffset * 1000).toFixed(1)}ms from ${filteredOffsets.length} samples`)
-    
-    // Apply correction to all detected beats that aren't manually modified
-    const manualBeatSet = new Set(manualBeats.value)
-    const deletedBeatSet = new Set(deletedDetectedBeats.value)
-    
-    correctedBeats.value = detectedBeats
-      .filter(t => {
-        // Don't correct if already manually adjusted or deleted
-        const hasManualNearby = [...manualBeatSet].some(mt => Math.abs(mt - t) < 0.05)
-        const isDeleted = [...deletedBeatSet].some(dt => Math.abs(dt - t) < 0.05)
-        return !hasManualNearby && !isDeleted
-      })
-      .map(t => t + correctionOffset)
-      .filter(t => t >= 0 && t <= (duration.value || 0)) // Keep within bounds
-  }
 
-  // Add a manual beat at the specified time (in seconds)
-  function addManualBeat(time: number) {
+  // Add a beat at the specified time (in seconds)
+  function addBeat(time: number) {
     // Avoid duplicate beats (within 50ms tolerance)
     const tolerance = 0.05
-    const exists = manualBeats.value.some(t => Math.abs(t - time) < tolerance)
+    const exists = beats.value.some(t => Math.abs(t - time) < tolerance)
     if (!exists) {
-      manualBeats.value.push(time)
-      manualBeats.value.sort((a, b) => a - b)
+      beats.value.push(time)
+      beats.value.sort((a, b) => a - b)
       
       // Update workspace
-      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '添加节拍')
-      
-      // Re-apply auto-correction if enabled
-      if (autoCorrectBeats.value) {
-        applyAutoCorrection()
-      }
+      workspaceStore.updateBeats(beats.value, '添加节拍')
       
       // Recalculate BPM curve
       recalculateBPMFromBeats()
     }
   }
 
-  // Remove a manual beat at the specified time
-  function removeManualBeat(time: number) {
+  // Remove a beat at the specified time
+  function removeBeat(time: number) {
     const tolerance = 0.05
-    const index = manualBeats.value.findIndex(t => Math.abs(t - time) < tolerance)
+    const index = beats.value.findIndex(t => Math.abs(t - time) < tolerance)
     if (index !== -1) {
-      manualBeats.value.splice(index, 1)
+      beats.value.splice(index, 1)
       
       // Update workspace
-      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '删除节拍')
-      
-      // Re-apply auto-correction if enabled
-      if (autoCorrectBeats.value) {
-        applyAutoCorrection()
-      }
+      workspaceStore.updateBeats(beats.value, '删除节拍')
       
       // Recalculate BPM curve
       recalculateBPMFromBeats()
     }
   }
 
-  // Remove a detected beat (add to deleted list)
-  function removeDetectedBeat(time: number) {
-    const tolerance = 0.05
-    const exists = deletedDetectedBeats.value.some(t => Math.abs(t - time) < tolerance)
-    if (!exists) {
-      deletedDetectedBeats.value.push(time)
-      
-      // Update workspace
-      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '删除检测到的节拍')
-      
-      // Recalculate BPM curve
-      recalculateBPMFromBeats()
-    }
-  }
-
-  // Check if a detected beat is deleted
-  function isDetectedBeatDeleted(time: number): boolean {
-    const tolerance = 0.05
-    return deletedDetectedBeats.value.some(t => Math.abs(t - time) < tolerance)
-  }
-
-  // Move a beat from one time to another (internal, no history)
-  function moveBeatInternal(oldTime: number, newTime: number): boolean {
-    const tolerance = 0.05
-    
-    // Check if it's a manual beat first (has priority)
-    const manualIndex = manualBeats.value.findIndex(t => Math.abs(t - oldTime) < tolerance)
-    if (manualIndex !== -1) {
-      manualBeats.value.splice(manualIndex, 1)
-      // Avoid duplicate beats
-      const exists = manualBeats.value.some(t => Math.abs(t - newTime) < tolerance)
-      if (!exists) {
-        manualBeats.value.push(newTime)
-        manualBeats.value.sort((a, b) => a - b)
-      }
-      return true
-    }
-    
-    // Check if it's a detected beat (only check original detected beats, not recalculated ones)
-    const detectedBeats = bpmInfo.value?.beats || []
-    
-    // Make sure it's not already in manual beats (to avoid treating recalculated beats as detected)
-    const isManualBeat = manualBeats.value.some(t => Math.abs(t - oldTime) < tolerance)
-    const isAlreadyDeleted = deletedDetectedBeats.value.some(t => Math.abs(t - oldTime) < tolerance)
-    
-    // Only treat as detected beat if it's in detected list AND not in manual beats
-    const isDetected = detectedBeats.some(t => Math.abs(t - oldTime) < tolerance) && !isManualBeat
-    
-    if (isDetected && !isAlreadyDeleted) {
-      // Remove detected beat and add as manual beat at new position
-      deletedDetectedBeats.value.push(oldTime)
-      
-      const beatExists = manualBeats.value.some(t => Math.abs(t - newTime) < tolerance)
-      if (!beatExists) {
-        manualBeats.value.push(newTime)
-        manualBeats.value.sort((a, b) => a - b)
-      }
-      return true
-    }
-    
-    return false
-  }
-
-  // Move a beat from one time to another (with history)
+  // Move a beat from one time to another (without saving)
+  // Used during drag operations - only updates in-memory data
   function moveBeat(oldTime: number, newTime: number) {
-    if (moveBeatInternal(oldTime, newTime)) {
-      // Update workspace with history
-      workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '移动节拍')
+    const tolerance = 0.05
+    const index = beats.value.findIndex(t => Math.abs(t - oldTime) < tolerance)
+    
+    if (index !== -1) {
+      beats.value.splice(index, 1)
       
-      // Re-apply auto-correction if enabled
-      if (autoCorrectBeats.value) {
-        applyAutoCorrection()
+      // Avoid duplicate beats at new position
+      const exists = beats.value.some(t => Math.abs(t - newTime) < tolerance)
+      if (!exists) {
+        beats.value.push(newTime)
+        beats.value.sort((a, b) => a - b)
       }
       
-      // Recalculate BPM curve
+      // Recalculate BPM curve (but don't save to workspace yet)
       recalculateBPMFromBeats()
     }
   }
 
-  // Clear all manual beats
-  function clearManualBeats() {
-    manualBeats.value = []
-    workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '清除手动节拍')
+  // Finish moving a beat - saves to workspace and history
+  // Should be called when drag operation ends
+  function finishMoveBeat() {
+    workspaceStore.updateBeats(beats.value, '移动节拍')
+  }
+
+  // Clear all beats
+  function clearBeats() {
+    beats.value = []
+    workspaceStore.updateBeats(beats.value, '清除所有节拍')
     // Recalculate BPM curve
     recalculateBPMFromBeats()
   }
 
-  // Reset all beat edits (clear manual beats and restore deleted detected beats)
-  function resetBeatEdits() {
-    manualBeats.value = []
-    deletedDetectedBeats.value = []
-    workspaceStore.updateBeats(manualBeats.value, deletedDetectedBeats.value, '重置所有编辑')
-    // Recalculate BPM curve
-    recalculateBPMFromBeats()
-  }
-
-  // Get active detected beats (excluding deleted ones)
-  function getActiveDetectedBeats(): number[] {
-    // Use corrected beats if auto-correction is enabled
-    if (autoCorrectBeats.value && correctedBeats.value.length > 0) {
-      return correctedBeats.value.filter(t => !isDetectedBeatDeleted(t))
-    }
-    
-    const detected = bpmInfo.value?.beats || []
-    return detected.filter(t => !isDetectedBeatDeleted(t))
-  }
-
-  // Get all beats (detected + manual) sorted, excluding deleted detected beats
+  // Get all beats
   function getAllBeats(): number[] {
-    const detected = getActiveDetectedBeats()
-    const all = [...detected, ...manualBeats.value]
-    // Remove duplicates within tolerance and sort
-    const tolerance = 0.05
-    const unique: number[] = []
-    for (const t of all.sort((a, b) => a - b)) {
-      if (unique.length === 0 || t - unique[unique.length - 1] >= tolerance) {
-        unique.push(t)
-      }
-    }
-    return unique
+    return [...beats.value]
   }
 
   // Export beats as milliseconds array
   function exportBeatsAsMilliseconds(): number[] {
-    return getAllBeats().map(t => Math.round(t * 1000))
+    return beats.value.map(t => Math.round(t * 1000))
   }
 
   // Export beats as JSON string
@@ -404,25 +265,24 @@ export const useAudioStore = defineStore('audio', () => {
   }
 
   // Import beats from file or JSON
-  function importBeats(beatsData: number[] | string): { success: boolean; message: string } {
-    const result = workspaceStore.importBeats(beatsData)
+  async function importBeats(beatsData: number[] | string): Promise<{ success: boolean; message: string }> {
+    const result = await workspaceStore.importBeats(beatsData)
     
-    if (result.success && workspaceStore.currentWorkspace) {
-      // Sync with current store state
-      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
-      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+    if (result.success && result.beats) {
+      beats.value = [...result.beats]
       
-      // Recalculate BPM info based on imported beats
+      // Recalculate BPM info from imported beats
       recalculateBPMFromBeats()
     }
     
     return result
   }
   
-  // Recalculate BPM info from current beats (manual + detected)
+  // Recalculate BPM info from current beats
   function recalculateBPMFromBeats() {
-    const allBeats = getAllBeats()
+    const allBeats = beats.value
     if (allBeats.length < 2) {
+      bpmInfo.value = null
       return
     }
     
@@ -491,31 +351,30 @@ export const useAudioStore = defineStore('audio', () => {
       confidence = consistentCount / (allBeats.length - 1)
     }
     
-    // Update bpmInfo - preserve original detected beats array if it exists
-    const originalBeats = bpmInfo.value?.beats || []
+    // Update bpmInfo
     bpmInfo.value = {
       bpm: avgBPM,
       confidence,
-      beats: originalBeats, // Keep original detected beats, don't overwrite with allBeats
+      beats: allBeats,
       localBPMs
     }
   }
 
   // Undo last action
-  function undo() {
-    if (workspaceStore.undo() && workspaceStore.currentWorkspace) {
-      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
-      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+  async function undo() {
+    const result = await workspaceStore.undo()
+    if (result && workspaceStore.currentWorkspace) {
+      beats.value = [...workspaceStore.currentWorkspace.beats]
       // Recalculate BPM curve
       recalculateBPMFromBeats()
     }
   }
 
   // Redo last undone action
-  function redo() {
-    if (workspaceStore.redo() && workspaceStore.currentWorkspace) {
-      manualBeats.value = [...workspaceStore.currentWorkspace.manualBeats]
-      deletedDetectedBeats.value = [...workspaceStore.currentWorkspace.deletedDetectedBeats]
+  async function redo() {
+    const result = await workspaceStore.redo()
+    if (result && workspaceStore.currentWorkspace) {
+      beats.value = [...workspaceStore.currentWorkspace.beats]
       // Recalculate BPM curve
       recalculateBPMFromBeats()
     }
@@ -540,10 +399,7 @@ export const useAudioStore = defineStore('audio', () => {
     audioContext.value = null
     bpmInfo.value = null
     isDetectingBPM.value = false
-    manualBeats.value = []
-    deletedDetectedBeats.value = []
-    autoCorrectBeats.value = false
-    correctedBeats.value = []
+    beats.value = []
   }
 
   return {
@@ -561,12 +417,11 @@ export const useAudioStore = defineStore('audio', () => {
     bpmInfo,
     isDetectingBPM,
     showBeats,
-    autoCorrectBeats,
-    manualBeats,
-    deletedDetectedBeats,
+    beats,
     fileName,
     progress,
     setAudioFile,
+    loadWorkspaceById,
     setAudioElement,
     initAudioContext,
     setPlaying,
@@ -576,18 +431,13 @@ export const useAudioStore = defineStore('audio', () => {
     setAudioContext,
     setAudioBuffer,
     detectBPMFromBuffer,
+    redetectBPM,
     toggleShowBeats,
-    toggleAutoCorrectBeats,
-    applyAutoCorrection,
-    addManualBeat,
-    removeManualBeat,
-    removeDetectedBeat,
-    isDetectedBeatDeleted,
+    addBeat,
+    removeBeat,
     moveBeat,
-    moveBeatInternal,
-    clearManualBeats,
-    resetBeatEdits,
-    getActiveDetectedBeats,
+    finishMoveBeat,
+    clearBeats,
     getAllBeats,
     exportBeatsAsMilliseconds,
     exportBeatsAsJSON,

@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { storageManager } from '../utils/storage'
 
 // Workspace data for a single audio file
 export interface WorkspaceData {
   fileId: string // Unique identifier (filename + size + lastModified)
   fileName: string
-  manualBeats: number[]
-  deletedDetectedBeats: number[]
+  beats: number[] // Unified beats array (no distinction between manual and detected)
+  bpmDetected: boolean // Flag to indicate if BPM has been detected for this file
   history: HistoryEntry[]
   historyIndex: number
   createdAt: number
@@ -15,8 +16,7 @@ export interface WorkspaceData {
 
 // History entry for undo/redo
 export interface HistoryEntry {
-  manualBeats: number[]
-  deletedDetectedBeats: number[]
+  beats: number[]
   timestamp: number
   action: string // Description of the action
 }
@@ -27,6 +27,41 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   
   // Current active workspace fileId
   const currentFileId = ref<string | null>(null)
+
+  // Flag to track if storage is initialized
+  const storageInitialized = ref(false)
+  
+  // Last opened workspace fileId (for auto-restore on page refresh)
+  const lastOpenedFileId = ref<string | null>(null)
+
+  // Initialize storage and load all workspaces
+  async function initStorage() {
+    if (storageInitialized.value) return
+    
+    try {
+      await storageManager.init()
+      const savedWorkspaces = await storageManager.loadAllWorkspaces()
+      
+      // Load all saved workspaces into memory
+      for (const workspace of savedWorkspaces) {
+        workspaces.value.set(workspace.fileId, workspace)
+      }
+      
+      // Load last opened file ID from localStorage
+      const saved = localStorage.getItem('wavitor_last_opened_file_id')
+      if (saved) {
+        lastOpenedFileId.value = saved
+      }
+      
+      storageInitialized.value = true
+      console.log(`Initialized storage with ${savedWorkspaces.length} workspaces`)
+    } catch (error) {
+      console.error('Failed to initialize storage:', error)
+    }
+  }
+
+  // Auto-initialize on store creation
+  initStorage()
 
   // Generate unique file ID
   function generateFileId(file: File): string {
@@ -46,31 +81,52 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // Create or load workspace for a file
-  function loadWorkspace(file: File): WorkspaceData {
+  async function loadWorkspace(file: File): Promise<WorkspaceData> {
     const fileId = generateFileId(file)
     
     let workspace = workspaces.value.get(fileId)
     
     if (!workspace) {
-      // Create new workspace
-      workspace = {
-        fileId,
-        fileName: file.name,
-        manualBeats: [],
-        deletedDetectedBeats: [],
-        history: [],
-        historyIndex: -1,
-        createdAt: Date.now(),
-        lastModified: Date.now()
+      // Try to load from storage first
+      try {
+        workspace = await storageManager.loadWorkspace(fileId)
+      } catch (error) {
+        console.error('Failed to load workspace from storage:', error)
       }
       
-      // Save initial state to history
-      addToHistory(workspace, 'Initial state')
+      if (!workspace) {
+        // Create new workspace
+        workspace = {
+          fileId,
+          fileName: file.name,
+          beats: [],
+          bpmDetected: false,
+          history: [],
+          historyIndex: -1,
+          createdAt: Date.now(),
+          lastModified: Date.now()
+        }
+        
+        // Save initial state to history
+        addToHistory(workspace, '初始状态')
+      }
       
       workspaces.value.set(fileId, workspace)
+      
+      // Save to storage
+      try {
+        await storageManager.saveWorkspace(workspace)
+      } catch (error) {
+        console.error('Failed to save workspace to storage:', error)
+      }
     }
     
     currentFileId.value = fileId
+    lastOpenedFileId.value = fileId
+    
+    // Save last opened file ID to localStorage
+    localStorage.setItem('wavitor_last_opened_file_id', fileId)
+    
     return workspace
   }
 
@@ -82,8 +138,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     
     const entry: HistoryEntry = {
-      manualBeats: [...workspace.manualBeats],
-      deletedDetectedBeats: [...workspace.deletedDetectedBeats],
+      beats: [...workspace.beats],
       timestamp: Date.now(),
       action
     }
@@ -100,39 +155,58 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // Save current state to history
-  function saveState(action: string) {
+  async function saveState(action: string) {
     const workspace = currentWorkspace.value
     if (!workspace) return
     
     addToHistory(workspace, action)
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace)
+    } catch (error) {
+      console.error('Failed to save workspace to storage:', error)
+    }
   }
 
   // Undo
-  function undo(): boolean {
+  async function undo(): Promise<boolean> {
     const workspace = currentWorkspace.value
     if (!workspace || workspace.historyIndex <= 0) return false
     
     workspace.historyIndex--
     const entry = workspace.history[workspace.historyIndex]
     
-    workspace.manualBeats = [...entry.manualBeats]
-    workspace.deletedDetectedBeats = [...entry.deletedDetectedBeats]
+    workspace.beats = [...entry.beats]
     workspace.lastModified = Date.now()
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace)
+    } catch (error) {
+      console.error('Failed to save workspace to storage:', error)
+    }
     
     return true
   }
 
   // Redo
-  function redo(): boolean {
+  async function redo(): Promise<boolean> {
     const workspace = currentWorkspace.value
     if (!workspace || workspace.historyIndex >= workspace.history.length - 1) return false
     
     workspace.historyIndex++
     const entry = workspace.history[workspace.historyIndex]
     
-    workspace.manualBeats = [...entry.manualBeats]
-    workspace.deletedDetectedBeats = [...entry.deletedDetectedBeats]
+    workspace.beats = [...entry.beats]
     workspace.lastModified = Date.now()
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace)
+    } catch (error) {
+      console.error('Failed to save workspace to storage:', error)
+    }
     
     return true
   }
@@ -157,18 +231,39 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   })
 
   // Update beats data
-  function updateBeats(manualBeats: number[], deletedDetectedBeats: number[], action: string) {
+  async function updateBeats(beats: number[], action: string) {
     const workspace = currentWorkspace.value
     if (!workspace) return
     
-    workspace.manualBeats = [...manualBeats]
-    workspace.deletedDetectedBeats = [...deletedDetectedBeats]
+    workspace.beats = [...beats]
     
     addToHistory(workspace, action)
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace)
+    } catch (error) {
+      console.error('Failed to save workspace to storage:', error)
+    }
+  }
+  
+  // Mark BPM as detected for current workspace
+  async function markBPMDetected() {
+    const workspace = currentWorkspace.value
+    if (!workspace) return
+    
+    workspace.bpmDetected = true
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace)
+    } catch (error) {
+      console.error('Failed to save workspace to storage:', error)
+    }
   }
 
   // Import beats from JSON
-  function importBeats(beatsData: number[] | string): { success: boolean; message: string } {
+  async function importBeats(beatsData: number[] | string): Promise<{ success: boolean; message: string; beats?: number[] }> {
     try {
       let beats: number[]
       
@@ -182,12 +277,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { success: false, message: '无效的格式：期望数组' }
       }
       
-      // Convert milliseconds to seconds if needed (values > 1000 likely in ms)
+      // Detect if values are in milliseconds or seconds
+      // If max value > 100, assume milliseconds (because songs are usually longer than 100 seconds)
+      // This better handles beats in the first second (0-1000ms)
+      const maxValue = Math.max(...beats)
+      const isMilliseconds = maxValue > 100
+      
       const convertedBeats = beats.map(t => {
         if (typeof t !== 'number') {
           throw new Error('无效的节拍值')
         }
-        return t > 1000 ? t / 1000 : t
+        return isMilliseconds ? t / 1000 : t
       }).sort((a, b) => a - b)
       
       const workspace = currentWorkspace.value
@@ -195,28 +295,59 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { success: false, message: '没有活动的工作区' }
       }
       
-      // Replace current manual beats with imported beats
-      workspace.manualBeats = convertedBeats
+      // Replace beats with imported beats
+      workspace.beats = convertedBeats
+      workspace.bpmDetected = true // Mark as detected since beats are provided
       addToHistory(workspace, `导入 ${convertedBeats.length} 个节拍`)
       
-      return { success: true, message: `成功导入 ${convertedBeats.length} 个节拍` }
+      // Persist to storage
+      await storageManager.saveWorkspace(workspace)
+      
+      return { success: true, message: `成功导入 ${convertedBeats.length} 个节拍`, beats: convertedBeats }
     } catch (error) {
       return { success: false, message: `导入失败: ${error instanceof Error ? error.message : '未知错误'}` }
     }
   }
 
   // Delete workspace
-  function deleteWorkspace(fileId: string) {
+  async function deleteWorkspace(fileId: string): Promise<boolean> {
+    const isCurrentWorkspace = currentFileId.value === fileId
+    
+    // Delete from memory
     workspaces.value.delete(fileId)
-    if (currentFileId.value === fileId) {
+    
+    // Clear current file ID if deleting current workspace
+    if (isCurrentWorkspace) {
       currentFileId.value = null
+      lastOpenedFileId.value = null
+      localStorage.removeItem('wavitor_last_opened_file_id')
+    }
+    
+    // Delete from storage
+    try {
+      await storageManager.deleteWorkspace(fileId)
+      await storageManager.deleteAudioFile(fileId)
+      console.log(`Deleted workspace and audio file: ${fileId}`)
+      return true
+    } catch (error) {
+      console.error('Failed to delete workspace from storage:', error)
+      return false
     }
   }
 
   // Clear all workspaces
-  function clearAllWorkspaces() {
+  async function clearAllWorkspaces() {
     workspaces.value.clear()
     currentFileId.value = null
+    lastOpenedFileId.value = null
+    localStorage.removeItem('wavitor_last_opened_file_id')
+    
+    // Clear storage
+    try {
+      await storageManager.clearAll()
+    } catch (error) {
+      console.error('Failed to clear storage:', error)
+    }
   }
 
   // Get all workspace summaries
@@ -224,8 +355,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return Array.from(workspaces.value.values()).map(ws => ({
       fileId: ws.fileId,
       fileName: ws.fileName,
-      beatCount: ws.manualBeats.length,
-      deletedCount: ws.deletedDetectedBeats.length,
+      beatCount: ws.beats.length,
       lastModified: ws.lastModified,
       isCurrent: ws.fileId === currentFileId.value
     })).sort((a, b) => b.lastModified - a.lastModified)
@@ -235,9 +365,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     workspaces,
     currentFileId,
     currentWorkspace,
+    storageInitialized,
+    lastOpenedFileId,
     generateFileId,
     hasWorkspace,
     loadWorkspace,
+    initStorage,
     saveState,
     undo,
     redo,
@@ -245,6 +378,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     canRedo,
     currentAction,
     updateBeats,
+    markBPMDetected,
     importBeats,
     deleteWorkspace,
     clearAllWorkspaces,

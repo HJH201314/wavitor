@@ -47,10 +47,9 @@ const isEditMode = ref(false)
 // Beat dragging state
 const isDraggingBeat = ref(false)
 const draggingBeatTime = ref<number | null>(null)
-const draggingBeatType = ref<'manual' | 'detected' | null>(null)
 const draggingBeatOriginalTime = ref<number | null>(null) // Store original position for history
 
-// Total beats count (detected + manual)
+// Total beats count
 const totalBeatsCount = computed(() => audioStore.getAllBeats().length)
 
 // Pixels per second for rendering
@@ -208,16 +207,14 @@ function drawWaveform() {
   // Draw beat markers first (behind waveform)
   if (audioStore.showBeats) {
     const allBeats = audioStore.getAllBeats()
-    const manualBeats = new Set(audioStore.manualBeats)
     
     for (const beatTime of allBeats) {
       if (beatTime >= startTime && beatTime <= endTime) {
         const x = ((beatTime - startTime) / (endTime - startTime)) * canvasWidth.value
-        const isManual = manualBeats.has(beatTime)
         
-        // Different colors for manual vs detected beats
-        ctx.strokeStyle = isManual ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.3)'
-        ctx.lineWidth = isManual ? 2 : 1
+        // Use consistent color for all beats
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.3)'
+        ctx.lineWidth = 1
         
         ctx.beginPath()
         ctx.moveTo(x, 0)
@@ -250,15 +247,13 @@ function drawWaveform() {
   // Draw beat markers on top (more visible dots at bottom)
   if (audioStore.showBeats) {
     const allBeats = audioStore.getAllBeats()
-    const manualBeats = new Set(audioStore.manualBeats)
     
     for (const beatTime of allBeats) {
       if (beatTime >= startTime && beatTime <= endTime) {
         const x = ((beatTime - startTime) / (endTime - startTime)) * canvasWidth.value
-        const isManual = manualBeats.has(beatTime)
         
-        // Green for manual, red for detected
-        ctx.fillStyle = isManual ? '#22c55e' : '#ef4444'
+        // Red for all beats
+        ctx.fillStyle = '#ef4444'
         
         // Draw small triangle/marker at bottom
         ctx.beginPath()
@@ -301,20 +296,12 @@ function formatTime(seconds: number): string {
 }
 
 // Find beat near a given time
-function findNearbyBeat(time: number, tolerance: number = 0.08): { time: number; type: 'manual' | 'detected' } | null {
-  // Check manual beats first (they take priority)
-  const nearbyManual = audioStore.manualBeats.find(t => Math.abs(t - time) < tolerance)
-  if (nearbyManual !== undefined) {
-    return { time: nearbyManual, type: 'manual' }
+function findNearbyBeat(time: number, tolerance: number = 0.08): { time: number } | null {
+  const allBeats = audioStore.getAllBeats()
+  const nearbyBeat = allBeats.find(t => Math.abs(t - time) < tolerance)
+  if (nearbyBeat !== undefined) {
+    return { time: nearbyBeat }
   }
-  
-  // Check detected beats
-  const detectedBeats = audioStore.getActiveDetectedBeats()
-  const nearbyDetected = detectedBeats.find(t => Math.abs(t - time) < tolerance)
-  if (nearbyDetected !== undefined) {
-    return { time: nearbyDetected, type: 'detected' }
-  }
-  
   return null
 }
 
@@ -343,7 +330,6 @@ function handleCanvasMouseDown(e: MouseEvent) {
     isDraggingBeat.value = true
     draggingBeatTime.value = nearbyBeat.time
     draggingBeatOriginalTime.value = nearbyBeat.time // Store original position
-    draggingBeatType.value = nearbyBeat.type
     
     document.addEventListener('mousemove', handleCanvasMouseMove)
     document.addEventListener('mouseup', handleCanvasMouseUp)
@@ -361,28 +347,25 @@ function handleCanvasMouseMove(e: MouseEvent) {
   const duration = audioStore.duration || localAudioBuffer.value?.duration || 0
   const clampedTime = Math.max(0, Math.min(duration, newTime))
   
-  // Move the beat (without recording history)
-  audioStore.moveBeatInternal(draggingBeatTime.value, clampedTime)
+  // Move the beat
+  audioStore.moveBeat(draggingBeatTime.value, clampedTime)
   draggingBeatTime.value = clampedTime
-  draggingBeatType.value = 'manual' // After moving, it becomes a manual beat
   
   drawWaveform()
 }
 
 function handleCanvasMouseUp() {
-  // Record history only once when drag ends
+  // If we were dragging a beat, save the operation to history
   if (isDraggingBeat.value && draggingBeatOriginalTime.value !== null && draggingBeatTime.value !== null) {
-    // Check if beat actually moved
-    if (Math.abs(draggingBeatOriginalTime.value - draggingBeatTime.value) > 0.01) {
-      // Record final position in history
-      workspaceStore.updateBeats(audioStore.manualBeats, audioStore.deletedDetectedBeats, '移动节拍')
+    // Only save if the beat actually moved
+    if (Math.abs(draggingBeatOriginalTime.value - draggingBeatTime.value) > 0.001) {
+      audioStore.finishMoveBeat()
     }
   }
   
   isDraggingBeat.value = false
   draggingBeatTime.value = null
   draggingBeatOriginalTime.value = null
-  draggingBeatType.value = null
   
   document.removeEventListener('mousemove', handleCanvasMouseMove)
   document.removeEventListener('mouseup', handleCanvasMouseUp)
@@ -405,11 +388,7 @@ function handleCanvasContextMenu(e: MouseEvent) {
   
   if (nearbyBeat) {
     // Delete the beat
-    if (nearbyBeat.type === 'manual') {
-      audioStore.removeManualBeat(nearbyBeat.time)
-    } else if (nearbyBeat.type === 'detected') {
-      audioStore.removeDetectedBeat(nearbyBeat.time)
-    }
+    audioStore.removeBeat(nearbyBeat.time)
     drawWaveform()
   }
 }
@@ -430,7 +409,7 @@ function handleCanvasClick(e: MouseEvent) {
     
     if (!nearbyBeat) {
       // Add a new beat only if not near an existing beat
-      audioStore.addManualBeat(clampedTime)
+      audioStore.addBeat(clampedTime)
       drawWaveform()
     }
     return
@@ -599,7 +578,7 @@ watch(() => audioStore.currentTime, () => {
   }
 })
 
-watch(() => [audioStore.bpmInfo, audioStore.showBeats, audioStore.manualBeats.length, audioStore.deletedDetectedBeats.length], () => {
+watch(() => [audioStore.bpmInfo, audioStore.showBeats, audioStore.beats.length], () => {
   if (waveformData.value && waveformData.value.length > 0) {
     drawWaveform()
   }
@@ -653,7 +632,7 @@ async function handleFileInputChange(e: Event) {
   
   try {
     const text = await file.text()
-    const result = audioStore.importBeats(text)
+    const result = await audioStore.importBeats(text)
     
     if (result.success) {
       alert(result.message)
@@ -718,7 +697,7 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', handleScrollbarMouseUp)
   document.removeEventListener('mousemove', handleCanvasMouseMove)
   document.removeEventListener('mouseup', handleCanvasMouseUp)
-})
+});
 </script>
 
 <template>
@@ -744,12 +723,6 @@ onUnmounted(() => {
             </span>
             <span class="text-xs text-gray-400 whitespace-nowrap">
               {{ totalBeatsCount }} 个节拍
-              <span v-if="audioStore.manualBeats.length > 0" class="text-green-600">
-                ({{ audioStore.manualBeats.length }} 手动)
-              </span>
-            </span>
-            <span v-if="audioStore.autoCorrectBeats" class="px-2 py-1 bg-cyan-100 text-cyan-700 text-xs font-medium rounded whitespace-nowrap">
-              🎯 智能修正已启用
             </span>
           </div>
         </div>
@@ -784,21 +757,12 @@ onUnmounted(() => {
             {{ isEditMode ? '退出编辑' : '编辑节拍' }}
           </button>
           <button
-            v-if="audioStore.manualBeats.length >= 3"
-            class="text-xs px-2 py-1 rounded transition-colors relative group"
-            :class="audioStore.autoCorrectBeats ? 'bg-cyan-500 text-white' : 'bg-cyan-100 text-cyan-600 hover:bg-cyan-200'"
-            @click="audioStore.toggleAutoCorrectBeats"
-            title="基于手动节拍自动修正检测到的节拍"
+            v-if="audioStore.audioBuffer"
+            class="text-xs px-2 py-1 bg-orange-100 text-orange-600 rounded hover:bg-orange-200 transition-colors"
+            @click="audioStore.redetectBPM"
+            title="重新检测节拍"
           >
-            <span class="flex items-center gap-1">
-              <span>{{ audioStore.autoCorrectBeats ? '✓' : '' }}</span>
-              <span>智能修正</span>
-            </span>
-            <!-- Tooltip -->
-            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-10">
-              学习手动节拍特征并自动修正检测节拍
-              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-800"></div>
-            </div>
+            重新检测
           </button>
           <button
             v-if="totalBeatsCount > 0"
@@ -840,9 +804,6 @@ onUnmounted(() => {
         <div class="text-xs flex items-center gap-3">
           <span v-if="isEditMode" class="text-green-600 font-medium whitespace-nowrap">
             左键添加 | 右键删除 | 拖拽移动
-          </span>
-          <span v-else-if="audioStore.manualBeats.length >= 1 && audioStore.manualBeats.length < 3" class="text-cyan-600 whitespace-nowrap">
-            💡 添加 {{ 3 - audioStore.manualBeats.length }} 个以上手动节拍可启用智能修正
           </span>
           <span class="text-gray-400 whitespace-nowrap">Ctrl+滚轮缩放</span>
         </div>

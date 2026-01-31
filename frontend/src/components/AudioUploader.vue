@@ -33,12 +33,14 @@ function handleFileSelect(e: Event) {
   if (files && files.length > 0) {
     handleFile(files[0])
   }
+  // Reset input to allow selecting the same file again
+  target.value = ''
 }
 
-function handleFile(file: File) {
+async function handleFile(file: File) {
   const validTypes = ['audio/wav', 'audio/mpeg', 'audio/ogg', 'audio/flac', 'audio/aac', 'audio/mp4', 'audio/x-wav']
   if (validTypes.includes(file.type) || file.name.toLowerCase().endsWith('.wav')) {
-    audioStore.setAudioFile(file)
+    await audioStore.setAudioFile(file)
   } else {
     alert('请上传有效的音频文件 (WAV, MP3, OGG, FLAC, AAC)')
   }

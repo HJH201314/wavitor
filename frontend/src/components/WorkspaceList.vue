@@ -1,12 +1,57 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAudioStore } from '../stores/audio'
+import { storageManager } from '../utils/storage'
 
 const workspaceStore = useWorkspaceStore()
 const audioStore = useAudioStore()
 
 const workspaces = computed(() => workspaceStore.workspaceSummaries)
+const storageUsage = ref(0)
+const storageQuota = ref(0)
+const fileInput = ref<HTMLInputElement | null>(null)
+
+const acceptedFormats = '.wav,.mp3,.ogg,.flac,.aac,.m4a'
+
+const storagePercentage = computed(() => {
+  if (storageQuota.value === 0) return 0
+  return (storageUsage.value / storageQuota.value) * 100
+})
+
+async function updateStorageInfo() {
+  const info = await storageManager.getStorageUsage()
+  storageUsage.value = info.usage
+  storageQuota.value = info.quota
+}
+
+onMounted(() => {
+  updateStorageInfo()
+})
+
+// File upload functions
+function triggerFileInput() {
+  fileInput.value?.click()
+}
+
+function handleFileSelect(e: Event) {
+  const target = e.target as HTMLInputElement
+  const files = target.files
+  if (files && files.length > 0) {
+    handleFile(files[0])
+  }
+  target.value = ''
+}
+
+async function handleFile(file: File) {
+  const validTypes = ['audio/wav', 'audio/mpeg', 'audio/ogg', 'audio/flac', 'audio/aac', 'audio/mp4', 'audio/x-wav']
+  if (validTypes.includes(file.type) || file.name.toLowerCase().endsWith('.wav')) {
+    await audioStore.setAudioFile(file)
+    updateStorageInfo()
+  } else {
+    alert('请上传有效的音频文件 (WAV, MP3, OGG, FLAC, AAC)')
+  }
+}
 
 function formatDate(timestamp: number): string {
   const date = new Date(timestamp)
@@ -43,7 +88,17 @@ function handleDeleteWorkspace(fileId: string, event: Event) {
   event.stopPropagation()
   
   if (confirm('确定要删除这个工作区吗？此操作不可恢复。')) {
-    workspaceStore.deleteWorkspace(fileId)
+    const isCurrentWorkspace = workspaceStore.currentFileId === fileId
+    
+    workspaceStore.deleteWorkspace(fileId).then(success => {
+      if (success) {
+        // If deleting current workspace, reset audio state
+        if (isCurrentWorkspace) {
+          audioStore.reset()
+        }
+        updateStorageInfo()
+      }
+    })
   }
 }
 
@@ -51,6 +106,16 @@ function handleClearAll() {
   if (confirm('确定要清除所有工作区吗？此操作不可恢复。')) {
     workspaceStore.clearAllWorkspaces()
     audioStore.reset()
+    updateStorageInfo()
+  }
+}
+
+async function switchWorkspace(fileId: string) {
+  if (workspaceStore.currentFileId === fileId) return
+  
+  const success = await audioStore.loadWorkspaceById(fileId)
+  if (!success) {
+    alert('无法加载工作区，音频文件可能已被删除')
   }
 }
 
@@ -62,24 +127,45 @@ function getWorkspaceName(fileName: string): string {
   }
   return fileName
 }
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-white rounded-xl shadow-sm overflow-hidden">
+    <!-- Hidden file input -->
+    <input
+      ref="fileInput"
+      type="file"
+      :accept="acceptedFormats"
+      class="hidden"
+      @change="handleFileSelect"
+    />
+    
     <!-- Header -->
     <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between mb-2">
         <h2 class="text-sm font-semibold text-gray-700">工作区列表</h2>
         <button
-          v-if="workspaces.length > 0"
-          class="text-xs text-red-500 hover:text-red-700 transition-colors"
-          @click="handleClearAll"
-          title="清除所有工作区"
+          class="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5"
+          @click="triggerFileInput"
+          title="新建工作区"
         >
-          清空
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          新建
         </button>
       </div>
-      <p class="text-xs text-gray-500 mt-1">{{ workspaces.length }} 个工作区</p>
+      <p class="text-xs text-gray-500">{{ workspaces.length }} 个工作区</p>
     </div>
     
     <!-- Workspace List -->
@@ -98,6 +184,7 @@ function getWorkspaceName(fileName: string): string {
           :key="workspace.fileId"
           class="group px-4 py-3 hover:bg-gray-50 transition-colors cursor-pointer relative"
           :class="{ 'bg-blue-50 hover:bg-blue-50': workspace.isCurrent }"
+          @click="switchWorkspace(workspace.fileId)"
         >
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1 min-w-0">
@@ -144,6 +231,33 @@ function getWorkspaceName(fileName: string): string {
             </button>
           </div>
         </div>
+      </div>
+    </div>
+    
+    <!-- Storage Info -->
+    <div class="px-4 py-3 border-t border-gray-200 bg-gray-50">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs text-gray-600">存储空间</div>
+        <button
+          v-if="workspaces.length > 0"
+          class="text-xs text-red-500 hover:text-red-700 transition-colors font-medium"
+          @click="handleClearAll"
+          title="清除所有工作区"
+        >
+          清空全部
+        </button>
+      </div>
+      <div class="mb-2">
+        <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div 
+            class="h-full bg-blue-500 transition-all duration-300"
+            :style="{ width: `${Math.min(storagePercentage, 100)}%` }"
+          ></div>
+        </div>
+      </div>
+      <div class="flex justify-between text-xs text-gray-500">
+        <span>{{ formatBytes(storageUsage) }} / {{ formatBytes(storageQuota) }}</span>
+        <span>{{ storagePercentage.toFixed(1) }}%</span>
       </div>
     </div>
   </div>
