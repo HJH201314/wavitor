@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - main
 
 # 设置 GITHUB_TOKEN 的权限
 permissions:
