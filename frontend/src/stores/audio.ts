@@ -53,6 +53,18 @@ export const useAudioStore = defineStore('audio', () => {
       const workspace = await workspaceStore.loadWorkspace(file);
       beats.value = [...workspace.beats];
       
+      // If workspace has beats, immediately recalculate BPM info
+      // Note: This provides an initial visualization even before audio metadata loads
+      // Will be recalculated again after metadata loads with accurate duration
+      if (workspace.beats.length >= 2) {
+        // Use estimated duration based on beats range for initial display
+        const estimatedDuration = Math.max(...workspace.beats) + 2;
+        duration.value = estimatedDuration;
+        recalculateBPMFromBeats();
+        // Keep the estimated duration until actual metadata loads
+        // This ensures bpmInfo remains available for visualization
+      }
+      
       // Save audio file to storage
       const fileId = workspaceStore.generateFileId(file);
       await storageManager.saveAudioFile(fileId, file);
@@ -136,7 +148,8 @@ export const useAudioStore = defineStore('audio', () => {
 
   async function detectBPMFromBuffer(buffer: AudioBuffer) {
     isDetectingBPM.value = true;
-    bpmInfo.value = null;
+    // Don't clear bpmInfo immediately to avoid flashing
+    // Keep existing visualization until new detection completes
     
     try {
       // Run detection in next tick to not block UI
@@ -153,6 +166,8 @@ export const useAudioStore = defineStore('audio', () => {
       await workspaceStore.markBPMDetected();
     } catch (error) {
       console.error('BPM detection failed:', error);
+      // Only clear bpmInfo on error
+      bpmInfo.value = null;
     } finally {
       isDetectingBPM.value = false;
     }
