@@ -7,7 +7,9 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
 
 const canvasWidth = ref(800);
-const canvasHeight = 120;
+const canvasHeight = ref(200); // 默认高度改为 200，支持动态调整
+const minHeight = 120;
+const maxHeight = 600;
 
 // 计算 BPM 范围
 const bpmRange = computed(() => {
@@ -42,10 +44,10 @@ function drawChart() {
   
   const dpr = window.devicePixelRatio || 1;
   canvas.width = canvasWidth.value * dpr;
-  canvas.height = canvasHeight * dpr;
+  canvas.height = canvasHeight.value * dpr;
   ctx.scale(dpr, dpr);
   
-  ctx.clearRect(0, 0, canvasWidth.value, canvasHeight);
+  ctx.clearRect(0, 0, canvasWidth.value, canvasHeight.value);
   
   const duration = audioStore.duration || 0;
   if (duration === 0) return;
@@ -71,7 +73,7 @@ function drawChart() {
 function drawGrid(ctx: CanvasRenderingContext2D, duration: number, minBPM: number, maxBPM: number, bpmSpan: number) {
   const padding = { left: 40, right: 20, top: 15, bottom: 25 };
   const chartWidth = canvasWidth.value - padding.left - padding.right;
-  const chartHeight = canvasHeight - padding.top - padding.bottom;
+  const chartHeight = canvasHeight.value - padding.top - padding.bottom;
   
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 1;
@@ -131,13 +133,13 @@ function drawGrid(ctx: CanvasRenderingContext2D, duration: number, minBPM: numbe
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = '#4b5563';
   ctx.font = '11px system-ui';
-  ctx.fillText('时间', padding.left + chartWidth / 2, canvasHeight - 2);
+  ctx.fillText('时间', padding.left + chartWidth / 2, canvasHeight.value - 2);
 }
 
 function drawAverageLine(ctx: CanvasRenderingContext2D, avgBPM: number, minBPM: number, bpmSpan: number) {
   const padding = { left: 40, right: 20, top: 15, bottom: 25 };
   const chartWidth = canvasWidth.value - padding.left - padding.right;
-  const chartHeight = canvasHeight - padding.top - padding.bottom;
+  const chartHeight = canvasHeight.value - padding.top - padding.bottom;
   
   const y = padding.top + chartHeight * (1 - (avgBPM - minBPM) / bpmSpan);
   
@@ -164,7 +166,7 @@ function drawAverageLine(ctx: CanvasRenderingContext2D, avgBPM: number, minBPM: 
 function drawBPMCurve(ctx: CanvasRenderingContext2D, localBPMs: { time: number; bpm: number }[], duration: number, minBPM: number, bpmSpan: number) {
   const padding = { left: 40, right: 20, top: 15, bottom: 25 };
   const chartWidth = canvasWidth.value - padding.left - padding.right;
-  const chartHeight = canvasHeight - padding.top - padding.bottom;
+  const chartHeight = canvasHeight.value - padding.top - padding.bottom;
   
   if (localBPMs.length === 0) return;
   
@@ -253,7 +255,7 @@ function drawBPMCurve(ctx: CanvasRenderingContext2D, localBPMs: { time: number; 
 function drawPlayhead(ctx: CanvasRenderingContext2D, duration: number, minBPM: number, bpmSpan: number) {
   const padding = { left: 40, right: 20, top: 15, bottom: 25 };
   const chartWidth = canvasWidth.value - padding.left - padding.right;
-  const chartHeight = canvasHeight - padding.top - padding.bottom;
+  const chartHeight = canvasHeight.value - padding.top - padding.bottom;
   
   const currentTime = audioStore.currentTime;
   if (currentTime <= 0 || currentTime > duration) return;
@@ -317,11 +319,51 @@ function formatTime(seconds: number): string {
 
 function updateCanvasSize() {
   if (containerRef.value) {
-    const newWidth = containerRef.value.clientWidth - 48;
+    // 获取容器的实际宽度（减去 padding）
+    const containerWidth = containerRef.value.clientWidth;
+    const computedStyle = window.getComputedStyle(containerRef.value);
+    const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0;
+    const paddingRight = parseFloat(computedStyle.paddingRight) || 0;
+    const newWidth = containerWidth - paddingLeft - paddingRight;
+    
     if (newWidth > 0 && newWidth !== canvasWidth.value) {
       canvasWidth.value = newWidth;
       drawChart();
     }
+  }
+}
+
+// 导出为图片
+function exportAsImage() {
+  const canvas = canvasRef.value;
+  if (!canvas) return;
+  
+  try {
+    // 创建下载链接
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      link.download = `bpm-curve-${timestamp}.png`;
+      link.href = url;
+      link.click();
+      
+      // 清理
+      URL.revokeObjectURL(url);
+    }, 'image/png');
+  } catch (error) {
+    console.error('导出图片失败:', error);
+  }
+}
+
+// 调整高度
+function adjustHeight(delta: number) {
+  const newHeight = canvasHeight.value + delta;
+  if (newHeight >= minHeight && newHeight <= maxHeight) {
+    canvasHeight.value = newHeight;
+    drawChart();
   }
 }
 
@@ -387,15 +429,55 @@ onUnmounted(() => {
           {{ audioStore.bpmInfo.localBPMs.length }} 个采样点
         </span>
       </div>
-      <div class="text-xs text-gray-400">
-        范围: {{ bpmRange.min }} - {{ bpmRange.max }} BPM
+      
+      <div class="flex items-center gap-3">
+        <div class="text-xs text-gray-400">
+          范围: {{ bpmRange.min }} - {{ bpmRange.max }} BPM
+        </div>
+        
+        <!-- 高度调整控件 -->
+        <div class="flex items-center gap-1.5 border-l pl-3 border-gray-200">
+          <button
+            @click="adjustHeight(-50)"
+            :disabled="canvasHeight <= minHeight"
+            class="p-1.5 rounded hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="减小高度"
+          >
+            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
+            </svg>
+          </button>
+          <span class="text-xs text-gray-500 min-w-[3rem] text-center">{{ canvasHeight }}px</span>
+          <button
+            @click="adjustHeight(50)"
+            :disabled="canvasHeight >= maxHeight"
+            class="p-1.5 rounded hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="增加高度"
+          >
+            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
+        
+        <!-- 导出按钮 -->
+        <button
+          @click="exportAsImage"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          title="导出为图片"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <span>导出图片</span>
+        </button>
       </div>
     </div>
     
     <canvas
       ref="canvasRef"
-      :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
-      class="w-full bg-gray-50 rounded-lg"
+      :style="{ width: '100%', height: canvasHeight + 'px' }"
+      class="bg-gray-50 rounded-lg"
     />
     
     <div class="mt-3 flex items-center justify-center gap-4 text-xs text-gray-500">
