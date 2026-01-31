@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { detectBPM, type BeatInfo } from '../utils/bpmDetector';
+import { detectBPMAsync, type BeatInfo, type BPMDetectionStrategy, type HeartSoundOptions } from '../utils/bpmDetector';
 import { useWorkspaceStore } from './workspace';
 import { storageManager } from '../utils/storage';
 
@@ -21,7 +21,19 @@ export const useAudioStore = defineStore('audio', () => {
   // BPM detection state
   const bpmInfo = ref<BeatInfo | null>(null);
   const isDetectingBPM = ref(false);
+  const detectionProgress = ref(0);
+  const detectionStage = ref('');
   const showBeats = ref(true);
+  const detectionStrategy = ref<BPMDetectionStrategy>('advanced'); // 'standard' or 'advanced' or 'heartsound'
+  const heartSoundOptions = ref<HeartSoundOptions>({
+    mode: 'standard',
+    sensitivity: 0.6,
+    filterStrength: 200,
+    s1s2Mode: 'auto',
+    noiseReduction: false,
+    minBPM: 40,
+    maxBPM: 300
+  });
   
   // Unified beats array (stored in workspace)
   const beats = ref<number[]>([]);
@@ -29,7 +41,7 @@ export const useAudioStore = defineStore('audio', () => {
   const fileName = computed(() => audioFile.value?.name || '');
   const progress = computed(() => (duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0));
 
-  async function setAudioFile(file: File) {
+  async function setAudioFile(file: File, shouldSaveFile: boolean = true) {
     if (audioUrl.value) {
       URL.revokeObjectURL(audioUrl.value);
     }
@@ -65,10 +77,12 @@ export const useAudioStore = defineStore('audio', () => {
         // This ensures bpmInfo remains available for visualization
       }
       
-      // Save audio file to storage
-      const fileId = workspaceStore.generateFileId(file);
-      await storageManager.saveAudioFile(fileId, file);
-      console.log(`Audio file saved to storage: ${file.name}`);
+      // Save audio file to storage only when uploading new file
+      if (shouldSaveFile) {
+        const fileId = workspaceStore.generateFileId(file);
+        await storageManager.saveAudioFile(fileId, file);
+        console.log(`Audio file saved to storage: ${file.name}`);
+      }
     } catch (error) {
       console.error('Failed to load workspace or save audio file:', error);
     }
@@ -84,8 +98,8 @@ export const useAudioStore = defineStore('audio', () => {
         return false;
       }
       
-      // Set the audio file (this will also load the workspace)
-      setAudioFile(file);
+      // Set the audio file without saving (file is already in storage)
+      await setAudioFile(file, false);
       
       return true;
     } catch (error) {
@@ -148,14 +162,32 @@ export const useAudioStore = defineStore('audio', () => {
 
   async function detectBPMFromBuffer(buffer: AudioBuffer) {
     isDetectingBPM.value = true;
-    // Don't clear bpmInfo immediately to avoid flashing
-    // Keep existing visualization until new detection completes
+    detectionProgress.value = 0;
+    detectionStage.value = '准备检测';
     
     try {
-      // Run detection in next tick to not block UI
-      await new Promise(resolve => setTimeout(resolve, 0));
+      // Prepare options based on strategy
+      let minBPM = 60;
+      let maxBPM = 200;
+
+      // For heart sound detection, use custom range from options
+      if (detectionStrategy.value === 'heartsound') {
+        minBPM = heartSoundOptions.value.minBPM ?? 40;
+        maxBPM = heartSoundOptions.value.maxBPM ?? 300;
+      }
+
+      // Use async detection to avoid blocking UI
+      const result = await detectBPMAsync(buffer, { 
+        minBPM, 
+        maxBPM,
+        strategy: detectionStrategy.value,
+        heartSoundOptions: detectionStrategy.value === 'heartsound' ? heartSoundOptions.value : undefined,
+        onProgress: (progress, stage) => {
+          detectionProgress.value = progress;
+          detectionStage.value = stage;
+        }
+      });
       
-      const result = detectBPM(buffer, { minBPM: 60, maxBPM: 200 });
       bpmInfo.value = result;
       
       console.log(`Detected ${result.beats.length} beats, avg BPM: ${result.bpm}`);
@@ -166,10 +198,11 @@ export const useAudioStore = defineStore('audio', () => {
       await workspaceStore.markBPMDetected();
     } catch (error) {
       console.error('BPM detection failed:', error);
-      // Only clear bpmInfo on error
       bpmInfo.value = null;
     } finally {
       isDetectingBPM.value = false;
+      detectionProgress.value = 0;
+      detectionStage.value = '';
     }
   }
   
@@ -181,6 +214,21 @@ export const useAudioStore = defineStore('audio', () => {
 
   function toggleShowBeats() {
     showBeats.value = !showBeats.value;
+  }
+
+  // Set detection strategy
+  function setDetectionStrategy(strategy: BPMDetectionStrategy) {
+    detectionStrategy.value = strategy;
+    console.log(`Detection strategy set to: ${strategy}`);
+  }
+
+  // Update heart sound options
+  function updateHeartSoundOptions(options: Partial<HeartSoundOptions>) {
+    heartSoundOptions.value = {
+      ...heartSoundOptions.value,
+      ...options
+    };
+    console.log('Heart sound options updated:', heartSoundOptions.value);
   }
 
   // Add a beat at the specified time (in seconds)
@@ -431,7 +479,11 @@ export const useAudioStore = defineStore('audio', () => {
     sourceNode,
     bpmInfo,
     isDetectingBPM,
+    detectionProgress,
+    detectionStage,
     showBeats,
+    detectionStrategy,
+    heartSoundOptions,
     beats,
     fileName,
     progress,
@@ -448,6 +500,8 @@ export const useAudioStore = defineStore('audio', () => {
     detectBPMFromBuffer,
     redetectBPM,
     toggleShowBeats,
+    setDetectionStrategy,
+    updateHeartSoundOptions,
     addBeat,
     removeBeat,
     moveBeat,

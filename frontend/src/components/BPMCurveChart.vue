@@ -317,6 +317,40 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Convert x position to time
+function xToTime(x: number): number {
+  const padding = { left: 40, right: 20, top: 15, bottom: 25 };
+  const chartWidth = canvasWidth.value - padding.left - padding.right;
+  const duration = audioStore.duration || 0;
+  
+  // Check if click is within chart area
+  if (x < padding.left || x > padding.left + chartWidth) {
+    return -1; // Outside chart area
+  }
+  
+  const percent = (x - padding.left) / chartWidth;
+  return percent * duration;
+}
+
+// Handle canvas click to seek
+function handleCanvasClick(e: MouseEvent) {
+  const duration = audioStore.duration || 0;
+  if (!duration || !canvasRef.value) return;
+  
+  const rect = canvasRef.value.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const clickedTime = xToTime(x);
+  
+  // Only seek if click is within chart area
+  if (clickedTime >= 0 && clickedTime <= duration) {
+    audioStore.setCurrentTime(clickedTime);
+    
+    // Dispatch seek event to update audio element
+    const event = new CustomEvent('seek', { detail: clickedTime });
+    window.dispatchEvent(event);
+  }
+}
+
 function updateCanvasSize() {
   if (containerRef.value) {
     // 获取容器的实际宽度（减去 padding）
@@ -488,7 +522,9 @@ onUnmounted(() => {
     <canvas
       ref="canvasRef"
       :style="{ width: '100%', height: canvasHeight + 'px' }"
-      class="bg-gray-50 rounded-lg"
+      class="bg-gray-50 rounded-lg cursor-pointer"
+      @click="handleCanvasClick"
+      title="点击跳转到指定位置"
     />
     
     <div class="mt-3 flex items-center justify-center gap-4 text-xs text-gray-500">

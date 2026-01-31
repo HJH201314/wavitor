@@ -7,6 +7,7 @@ import AudioPlayer from '../components/AudioPlayer.vue';
 import WaveformVisualizer from '../components/WaveformVisualizer.vue';
 import FrequencyVisualizer from '../components/FrequencyVisualizer.vue';
 import BPMCurveChart from '../components/BPMCurveChart.vue';
+import BPMSettings from '../components/BPMSettings.vue';
 import WorkspaceList from '../components/WorkspaceList.vue';
 
 const audioStore = useAudioStore();
@@ -118,6 +119,7 @@ onUnmounted(() => {
             class="flex flex-col gap-6"
           >
             <AudioPlayer />
+            <BPMSettings />
             <WaveformVisualizer />
             <BPMCurveChart />
             <FrequencyVisualizer />
