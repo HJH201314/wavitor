@@ -109,12 +109,33 @@ const avgBPM = computed(() => audioStore.bpmInfo?.bpm || 0);
 
 // 导出数据
 function exportBPMData() {
-  const data = displayBPMs.value.map(point => ({
-    time: point.time,
-    bpm: point.bpm
-  }));
+  // 构建每一秒的BPM数组
+  const duration = audioStore.duration || 0;
+  if (duration === 0) return;
   
-  const json = JSON.stringify(data, null, 2);
+  const bpmArray: number[] = [];
+  const points = displayBPMs.value;
+  
+  // 为每一秒填充BPM值
+  for (let second = 0; second < Math.ceil(duration); second++) {
+    // 找到最接近这一秒的BPM点
+    let closestPoint = points[0];
+    let minDistance = Math.abs(points[0].time - second);
+    
+    for (const point of points) {
+      const distance = Math.abs(point.time - second);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestPoint = point;
+      }
+      // 如果已经超过当前秒，不需要继续查找
+      if (point.time > second) break;
+    }
+    
+    bpmArray.push(Math.round(closestPoint.bpm));
+  }
+  
+  const json = JSON.stringify(bpmArray, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
