@@ -701,6 +701,9 @@ function handleCanvasClick(e: MouseEvent) {
 function handleGlobalSeek(e: Event) {
   const customEvent = e as CustomEvent;
   if (customEvent.detail !== undefined) {
+    const seekTime = customEvent.detail as number;
+    // Immediately update realTimePosition for instant visual feedback
+    realTimePosition.value = seekTime;
     drawAllWaveforms();
   }
 }

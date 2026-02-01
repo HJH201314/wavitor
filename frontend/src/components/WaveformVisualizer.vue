@@ -755,6 +755,9 @@ function handleCanvasTouchCancel() {
 function handleGlobalSeek(e: Event) {
   const customEvent = e as CustomEvent;
   if (customEvent.detail !== undefined) {
+    const seekTime = customEvent.detail as number;
+    // Immediately update realTimePosition for instant visual feedback
+    realTimePosition.value = seekTime;
     // Reset to follow mode when seeking from other components
     viewOffset.value = 0;
     autoFollow.value = true;
@@ -827,18 +830,51 @@ let dragStartCenterTime: number = 0;
 function handleScrollbarMouseDown(e: MouseEvent) {
   isDragging.value = true;
   scrollbarElement = e.currentTarget as HTMLElement;
-  dragStartX = e.clientX;
   
-  // Record initial center time
-  if (autoFollow.value) {
-    dragStartCenterTime = realTimePosition.value + viewOffset.value;
+  const duration = audioStore.duration || localAudioBuffer.value?.duration || 0;
+  if (duration === 0) return;
+  
+  // Check if clicking on the thumb (slider) itself
+  const target = e.target as HTMLElement;
+  const isClickingThumb = target.classList.contains('bg-blue-500') || 
+                         target.closest('.bg-blue-500');
+  
+  if (isClickingThumb) {
+    // Clicking on thumb: just start dragging from current position
+    if (autoFollow.value) {
+      dragStartCenterTime = realTimePosition.value + viewOffset.value;
+    } else {
+      dragStartCenterTime = fixedViewCenterTime.value;
+    }
+    
+    autoFollow.value = false;
+    fixedViewCenterTime.value = dragStartCenterTime;
   } else {
-    dragStartCenterTime = fixedViewCenterTime.value;
+    // Clicking on track: jump to clicked position
+    const rect = scrollbarElement.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickRatio = clickX / rect.width;
+    
+    const halfWindow = windowDuration.value / 2;
+    const minCenter = halfWindow;
+    const maxCenter = duration - halfWindow;
+    const targetTime = clickRatio * duration;
+    const newCenterTime = Math.max(minCenter, Math.min(maxCenter, targetTime));
+    
+    // Update view immediately
+    autoFollow.value = false;
+    fixedViewCenterTime.value = newCenterTime;
+    dragStartCenterTime = newCenterTime;
+    drawWaveform();
+    
+    // Also redraw ECG waveforms if they exist
+    if (ecgWaveforms.value.length > 0) {
+      drawAllECGWaveforms();
+    }
   }
   
-  // Disable auto-follow when starting drag
-  autoFollow.value = false;
-  fixedViewCenterTime.value = dragStartCenterTime;
+  // Record start position for subsequent dragging
+  dragStartX = e.clientX;
   
   // Add document-level listeners for drag
   document.addEventListener('mousemove', handleScrollbarMouseMove);

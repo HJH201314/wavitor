@@ -105,10 +105,21 @@ watch(() => audioStore.audioUrl, (newUrl) => {
   }
 });
 
+// Handle global seek events
+function handleGlobalSeek(e: Event) {
+  const customEvent = e as CustomEvent;
+  if (customEvent.detail !== undefined && audioRef.value) {
+    const seekTime = customEvent.detail as number;
+    audioRef.value.currentTime = seekTime;
+  }
+}
+
 onMounted(() => {
   if (audioRef.value) {
     audioStore.setAudioElement(audioRef.value);
   }
+  // Listen for seek events from other components
+  window.addEventListener('seek', handleGlobalSeek as EventListener);
 });
 
 onUnmounted(() => {
@@ -116,6 +127,7 @@ onUnmounted(() => {
     audioRef.value.pause();
   }
   audioStore.setAudioElement(null);
+  window.removeEventListener('seek', handleGlobalSeek as EventListener);
 });
 </script>
 
