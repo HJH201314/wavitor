@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import { useAudioStore } from '../stores/audio';
+import Modal from './Modal.vue';
 
 const audioStore = useAudioStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -11,12 +12,85 @@ const canvasHeight = ref(200); // 默认高度改为 200，支持动态调整
 const minHeight = 120;
 const maxHeight = 600;
 
+// 显示控制
+const showExportDialog = ref(false);
+const showDisplaySettings = ref(false);
+
+// 显示模式：原始点或按秒采样
+type DisplayMode = 'points' | 'seconds';
+const displayMode = ref<DisplayMode>('points');
+const samplingWindowSize = ref(3); // 按秒采样时的窗口大小
+
+// 计算用于显示的 BPM 数据
+const displayBPMs = computed(() => {
+  if (displayMode.value === 'points') {
+    return audioStore.bpmInfo?.localBPMs || [];
+  } else {
+    // 按秒采样模式
+    return calculateSecondBasedBPMs();
+  }
+});
+
+// 按秒计算 BPM
+function calculateSecondBasedBPMs(): { time: number; bpm: number }[] {
+  const beats = audioStore.beats || [];
+  const duration = audioStore.duration || 0;
+  
+  if (beats.length < 2 || duration === 0) {
+    return [];
+  }
+
+  const windowSize = samplingWindowSize.value;
+  const totalSeconds = Math.ceil(duration);
+  const result: { time: number; bpm: number }[] = [];
+
+  for (let second = 0; second < totalSeconds; second++) {
+    // 该秒的时间范围 [second, second+1)
+    const secondStart = second;
+    const secondEnd = second + 1;
+    
+    // 扩展窗口：以该秒为中心，向前后各扩展
+    const halfWindow = (windowSize - 1) / 2; // 减1是因为已经包含该秒本身
+    const windowStart = secondStart - halfWindow;
+    const windowEnd = secondEnd + halfWindow;
+
+    // 找到扩展窗口内的所有节拍
+    const beatsInWindow = beats.filter(
+      beat => beat >= windowStart && beat < windowEnd
+    );
+
+    if (beatsInWindow.length >= 2) {
+      // 计算窗口内所有节拍的平均间隔
+      let totalInterval = 0;
+      for (let i = 1; i < beatsInWindow.length; i++) {
+        totalInterval += beatsInWindow[i] - beatsInWindow[i - 1];
+      }
+      const avgInterval = totalInterval / (beatsInWindow.length - 1);
+      
+      // 转换为 BPM（该秒的平均心率）
+      const bpm = Math.round(60 / avgInterval);
+      result.push({ time: second, bpm });
+    } else if (beatsInWindow.length === 1) {
+      // 只有一个节拍，使用全局平均
+      const avgBPM = audioStore.bpmInfo?.bpm || 0;
+      result.push({ time: second, bpm: avgBPM });
+    } else {
+      // 没有节拍
+      result.push({ time: second, bpm: 0 });
+    }
+  }
+
+  return result;
+}
+
 // 计算 BPM 范围
 const bpmRange = computed(() => {
-  const localBPMs = audioStore.bpmInfo?.localBPMs || [];
+  const localBPMs = displayBPMs.value;
   if (localBPMs.length === 0) return { min: 60, max: 200 };
   
-  const bpms = localBPMs.map(p => p.bpm);
+  const bpms = localBPMs.map(p => p.bpm).filter(bpm => bpm > 0);
+  if (bpms.length === 0) return { min: 60, max: 200 };
+  
   const min = Math.min(...bpms);
   const max = Math.max(...bpms);
   
@@ -33,9 +107,34 @@ const bpmRange = computed(() => {
 // 平均 BPM 线
 const avgBPM = computed(() => audioStore.bpmInfo?.bpm || 0);
 
+// 导出数据
+function exportBPMData() {
+  const data = displayBPMs.value.map(point => ({
+    time: point.time,
+    bpm: point.bpm
+  }));
+  
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  
+  const mode = displayMode.value === 'points' ? 'points' : `${samplingWindowSize.value}s`;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+  a.download = `bpm-curve-${mode}-${timestamp}.json`;
+  
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  showExportDialog.value = false;
+}
+
 function drawChart() {
   const canvas = canvasRef.value;
-  const localBPMs = audioStore.bpmInfo?.localBPMs || [];
+  const localBPMs = displayBPMs.value;
   
   if (!canvas || localBPMs.length === 0) return;
   
@@ -402,7 +501,7 @@ function adjustHeight(delta: number) {
 }
 
 // 监听数据变化
-watch(() => [audioStore.bpmInfo, audioStore.currentTime], async () => {
+watch(() => [audioStore.bpmInfo, audioStore.currentTime, audioStore.beats, displayMode.value, samplingWindowSize.value], async () => {
   // 如果是 bpmInfo 首次加载，确保尺寸正确
   if (audioStore.bpmInfo && canvasWidth.value === 800) {
     await nextTick();
@@ -459,9 +558,26 @@ onUnmounted(() => {
 });
 </script>
 
+<style scoped>
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out;
+}
+</style>
+
 <template>
   <div 
-    v-if="audioStore.bpmInfo && audioStore.bpmInfo.localBPMs.length > 0"
+    v-if="audioStore.bpmInfo && audioStore.beats.length > 0"
     ref="containerRef"
     class="bg-white rounded-xl p-4 md:p-6 shadow-sm max-w-full overflow-hidden"
   >
@@ -471,7 +587,7 @@ onUnmounted(() => {
           BPM 时间曲线
         </h3>
         <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded whitespace-nowrap">
-          {{ audioStore.bpmInfo.localBPMs.length }} 个采样点
+          {{ displayBPMs.length }} 个采样点
         </span>
         <div class="text-xs text-gray-400 whitespace-nowrap">
           范围: {{ bpmRange.min }} - {{ bpmRange.max }} BPM
@@ -479,6 +595,21 @@ onUnmounted(() => {
       </div>
       
       <div class="flex items-center gap-2 md:gap-3 flex-wrap">
+        <!-- 显示设置按钮 -->
+        <button
+          @click="showDisplaySettings = !showDisplaySettings"
+          class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap"
+          :class="showDisplaySettings 
+            ? 'bg-blue-100 text-blue-700' 
+            : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'"
+          title="显示设置"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
+          <span class="hidden sm:inline">{{ showDisplaySettings ? '收起' : '设置' }}</span>
+        </button>
+        
         <!-- 高度调整控件 -->
         <div class="flex items-center gap-1.5 border-l pl-2 md:pl-3 border-gray-200">
           <button
@@ -506,16 +637,83 @@ onUnmounted(() => {
         
         <!-- 导出按钮 -->
         <button
+          @click="showExportDialog = true"
+          class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-xs font-medium text-white bg-green-500 hover:bg-green-600 rounded-lg transition-colors whitespace-nowrap"
+          title="导出数据"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <span class="hidden sm:inline">导出数据</span>
+          <span class="inline sm:hidden">导出</span>
+        </button>
+        
+        <!-- 导出图片按钮 -->
+        <button
           @click="exportAsImage"
           class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
           title="导出为图片"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
           <span class="hidden sm:inline">导出图片</span>
-          <span class="inline sm:hidden">导出</span>
         </button>
+      </div>
+    </div>
+
+    <!-- 显示设置面板 -->
+    <div
+      v-if="showDisplaySettings"
+      class="mb-4 p-4 bg-gray-50 rounded-lg space-y-3 animate-fadeIn"
+    >
+      <div class="text-xs font-medium text-gray-700 mb-2">显示模式</div>
+      
+      <!-- 模式选择 -->
+      <div class="flex gap-2">
+        <button
+          @click="displayMode = 'points'"
+          class="flex-1 px-3 py-2 text-xs rounded-lg transition-all"
+          :class="displayMode === 'points'
+            ? 'bg-blue-500 text-white shadow-sm'
+            : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'"
+        >
+          <div class="font-medium">原始节拍点</div>
+          <div class="text-xs opacity-80 mt-0.5">
+            {{ audioStore.bpmInfo?.localBPMs?.length || 0 }} 个点
+          </div>
+        </button>
+        <button
+          @click="displayMode = 'seconds'"
+          class="flex-1 px-3 py-2 text-xs rounded-lg transition-all"
+          :class="displayMode === 'seconds'
+            ? 'bg-blue-500 text-white shadow-sm'
+            : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'"
+        >
+          <div class="font-medium">按秒采样</div>
+          <div class="text-xs opacity-80 mt-0.5">
+            {{ Math.ceil(audioStore.duration) }} 个点
+          </div>
+        </button>
+      </div>
+
+      <!-- 窗口大小调节（仅在按秒模式下显示） -->
+      <div v-if="displayMode === 'seconds'" class="space-y-2 pt-2 border-t border-gray-200">
+        <div class="flex justify-between items-center">
+          <label class="text-xs font-medium text-gray-700">计算窗口</label>
+          <span class="text-xs font-semibold text-blue-600">{{ samplingWindowSize }}s</span>
+        </div>
+        <input
+          v-model.number="samplingWindowSize"
+          type="range"
+          min="1"
+          max="10"
+          step="1"
+          class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+        />
+        <div class="text-xs text-gray-500">
+          以第 n 秒为中心的 {{ samplingWindowSize }}s 窗口内节拍的平均 BPM
+        </div>
       </div>
     </div>
     
@@ -541,5 +739,47 @@ onUnmounted(() => {
         <span>播放位置</span>
       </div>
     </div>
+
+    <!-- 导出对话框 -->
+    <Modal
+      :show="showExportDialog"
+      title="导出 BPM 曲线数据"
+      width="480px"
+      confirm-text="导出 JSON"
+      confirm-variant="success"
+      @close="showExportDialog = false"
+      @confirm="exportBPMData"
+    >
+      <div class="space-y-4">
+        <div class="bg-gray-50 rounded-lg p-3 space-y-2 text-sm">
+          <div class="flex justify-between">
+            <span class="text-gray-600">显示模式：</span>
+            <span class="font-medium text-gray-800">
+              {{ displayMode === 'points' ? '原始节拍点' : '按秒采样' }}
+            </span>
+          </div>
+          <div v-if="displayMode === 'seconds'" class="flex justify-between">
+            <span class="text-gray-600">计算窗口：</span>
+            <span class="font-medium text-gray-800">{{ samplingWindowSize }} 秒</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-600">数据点数：</span>
+            <span class="font-medium text-blue-600">{{ displayBPMs.length }} 个</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-gray-600">时长范围：</span>
+            <span class="font-medium text-gray-800">0 - {{ Math.ceil(audioStore.duration) }}s</span>
+          </div>
+        </div>
+
+        <div class="text-xs text-gray-500 space-y-1">
+          <div class="font-medium text-gray-700 mb-1">数据格式：</div>
+          <div>• 每个数据点包含 time（时间）和 bpm（BPM值）</div>
+          <div>• JSON 格式，可直接用于数据分析</div>
+          <div v-if="displayMode === 'seconds'">• 按秒采样，适合时序分析</div>
+          <div v-else>• 基于实际节拍，适合详细分析</div>
+        </div>
+      </div>
+    </Modal>
   </div>
 </template>

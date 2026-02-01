@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { useAudioStore } from '../stores/audio';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useWaveformViewStore } from '../stores/waveformView';
+import { success, error } from '../utils/message';
 
 const audioStore = useAudioStore();
 const workspaceStore = useWorkspaceStore();
@@ -1002,13 +1003,13 @@ async function handleFileInputChange(e: Event) {
     const result = await audioStore.importBeats(text);
     
     if (result.success) {
-      alert(result.message);
+      await success(result.message);
       drawWaveform();
     } else {
-      alert(`导入失败: ${result.message}`);
+      await error(`导入失败: ${result.message}`);
     }
-  } catch (error) {
-    alert(`读取文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+  } catch (err) {
+    await error(`读取文件失败: ${err instanceof Error ? err.message : '未知错误'}`);
   } finally {
     // Reset input
     target.value = '';
@@ -1939,10 +1940,6 @@ onUnmounted(() => {
           <div class="w-0.5 h-3 bg-purple-500 opacity-60" />
           <span>播放位置</span>
         </div>
-      </div>
-      
-      <div class="mt-2 text-xs text-purple-600 text-center">
-        💡 心电波形与心音波形同步显示，支持多个心电文件对照验证
       </div>
     </div>
     

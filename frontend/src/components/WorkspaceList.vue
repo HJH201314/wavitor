@@ -3,6 +3,7 @@ import { computed, ref, onMounted } from 'vue';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useAudioStore } from '../stores/audio';
 import { storageManager } from '../utils/storage';
+import { alert, confirm } from '../utils/message';
 
 const workspaceStore = useWorkspaceStore();
 const audioStore = useAudioStore();
@@ -89,10 +90,11 @@ function formatDate(timestamp: number): string {
   });
 }
 
-function handleDeleteWorkspace(fileId: string, event: Event) {
+async function handleDeleteWorkspace(fileId: string, event: Event) {
   event.stopPropagation();
   
-  if (confirm('确定要删除这个工作区吗？此操作不可恢复。')) {
+  const confirmed = await confirm('确定要删除这个工作区吗？此操作不可恢复。');
+  if (confirmed) {
     const isCurrentWorkspace = workspaceStore.currentFileId === fileId;
     
     workspaceStore.deleteWorkspace(fileId).then(success => {
@@ -107,8 +109,9 @@ function handleDeleteWorkspace(fileId: string, event: Event) {
   }
 }
 
-function handleClearAll() {
-  if (confirm('确定要清除所有工作区吗？此操作不可恢复。')) {
+async function handleClearAll() {
+  const confirmed = await confirm('确定要清除所有工作区吗？此操作不可恢复。');
+  if (confirmed) {
     workspaceStore.clearAllWorkspaces();
     audioStore.reset();
     updateStorageInfo();
@@ -125,7 +128,7 @@ async function switchWorkspace(fileId: string) {
   if (success) {
     emit('workspaceSelected');
   } else {
-    alert('无法加载工作区，音频文件可能已被删除');
+    await alert('无法加载工作区，音频文件可能已被删除', '加载失败');
   }
 }
 

@@ -970,10 +970,6 @@ onUnmounted(() => {
           <span>播放位置</span>
         </div>
       </div>
-      
-      <div class="mt-2 text-xs text-purple-600 text-center">
-        💡 心电波形与心音波形同步显示，支持多个心电文件对照验证
-      </div>
     </div>
   </div>
 </template>

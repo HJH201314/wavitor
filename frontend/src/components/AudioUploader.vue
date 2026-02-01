@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useAudioStore } from '../stores/audio';
+import { alert } from '../utils/message';
 
 const audioStore = useAudioStore();
 const isDragging = ref(false);

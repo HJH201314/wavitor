@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useAudioStore } from '../stores/audio';
+import { alert, confirm, success } from '../utils/message';
 
 const audioStore = useAudioStore();
 const isDragging = ref(false);
@@ -28,7 +29,10 @@ function handleDrop(e: DragEvent) {
   
   const files = e.dataTransfer?.files;
   if (files && files.length > 0) {
-    handleFile(files[0]);
+    const file = files[0];
+    if (file) {
+      handleFile(file);
+    }
   }
 }
 
@@ -36,7 +40,10 @@ function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement;
   const files = target.files;
   if (files && files.length > 0) {
-    handleFile(files[0]);
+    const file = files[0];
+    if (file) {
+      handleFile(file);
+    }
   }
   // Reset input
   target.value = '';
@@ -65,32 +72,36 @@ function triggerFileInput() {
 }
 
 async function handleRemove(ecgFileId: string) {
-  if (confirm('确定要移除这个心电文件吗？')) {
+  const confirmed = await confirm('确定要移除这个心电文件吗？');
+  if (confirmed) {
     await audioStore.clearECG(ecgFileId);
   }
 }
 
 async function handleRemoveAll() {
-  if (confirm('确定要移除所有心电文件吗？')) {
+  const confirmed = await confirm('确定要移除所有心电文件吗？');
+  if (confirmed) {
     await audioStore.clearECG();
   }
 }
 
 async function handleRecalibrate(ecgFileId: string) {
-  if (confirm('重新校准将重新检测该心电文件的 R 峰位置，确定继续吗？')) {
-    const success = await audioStore.recalibrateECG(ecgFileId);
-    if (success) {
-      alert('重新校准成功！');
+  const confirmed = await confirm('重新校准将重新检测该心电文件的 R 峰位置，确定继续吗？');
+  if (confirmed) {
+    const isSuccess = await audioStore.recalibrateECG(ecgFileId);
+    if (isSuccess) {
+      await success('重新校准成功！');
     } else {
-      alert('重新校准失败');
+      await alert('重新校准失败', '错误');
     }
   }
 }
 
 async function handleRecalibrateAll() {
-  if (confirm('重新校准将重新检测所有心电文件的 R 峰位置，确定继续吗？')) {
+  const confirmed = await confirm('重新校准将重新检测所有心电文件的 R 峰位置，确定继续吗？');
+  if (confirmed) {
     const result = await audioStore.recalibrateAllECG();
-    alert(`重新校准完成：${result.success}/${result.total} 个文件成功`);
+    await success(`重新校准完成：${result.success}/${result.total} 个文件成功`);
   }
 }
 </script>
