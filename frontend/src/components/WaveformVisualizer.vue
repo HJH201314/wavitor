@@ -480,9 +480,11 @@ function findNearbyBeat(time: number, tolerance: number = 0.08): { time: number 
 }
 
 // Convert x position to time
-function xToTime(x: number): number {
+function xToTime(x: number, actualWidth?: number): number {
   const { startTime, endTime } = getVisibleTimeRange();
-  const percent = x / canvasWidth.value;
+  // Use actual canvas width if provided, otherwise fall back to canvasWidth.value
+  const width = actualWidth ?? canvasWidth.value;
+  const percent = x / width;
   return startTime + percent * (endTime - startTime);
 }
 
@@ -494,7 +496,7 @@ function handleCanvasMouseDown(e: MouseEvent) {
   
   const rect = canvasRef.value.getBoundingClientRect();
   const x = e.clientX - rect.left;
-  const clickedTime = xToTime(x);
+  const clickedTime = xToTime(x, rect.width);
   
   // Check if clicking on an existing beat for dragging
   const nearbyBeat = findNearbyBeat(clickedTime);
@@ -517,7 +519,7 @@ function handleCanvasMouseMove(e: MouseEvent) {
   
   const rect = canvasRef.value.getBoundingClientRect();
   const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-  const newTime = xToTime(x);
+  const newTime = xToTime(x, rect.width);
   const duration = audioStore.duration || localAudioBuffer.value?.duration || 0;
   const clampedTime = Math.max(0, Math.min(duration, newTime));
   
@@ -555,7 +557,7 @@ function handleCanvasContextMenu(e: MouseEvent) {
   
   const rect = canvasRef.value.getBoundingClientRect();
   const x = e.clientX - rect.left;
-  const clickedTime = xToTime(x);
+  const clickedTime = xToTime(x, rect.width);
   
   // Check if right-clicking on an existing beat
   const nearbyBeat = findNearbyBeat(clickedTime);
@@ -573,7 +575,7 @@ function handleCanvasClick(e: MouseEvent) {
   
   const rect = canvasRef.value.getBoundingClientRect();
   const x = e.clientX - rect.left;
-  const clickedTime = xToTime(x);
+  const clickedTime = xToTime(x, rect.width);
   const clampedTime = Math.max(0, Math.min(duration, clickedTime));
   
   // In edit mode, add beats (removal is handled in mouseup)
@@ -630,7 +632,7 @@ function handleCanvasTouchStart(e: TouchEvent) {
   isLongPressing.value = false;
   isTouchDragging.value = false;
   
-  const touchedTime = xToTime(x);
+  const touchedTime = xToTime(x, rect.width);
   const nearbyBeat = findNearbyBeat(touchedTime, 0.12); // Larger tolerance for touch
   
   // Start long press timer
@@ -679,7 +681,7 @@ function handleCanvasTouchMove(e: TouchEvent) {
     if (isDraggingBeat.value && draggingBeatTime.value !== null) {
       isTouchDragging.value = true;
       
-      const newTime = xToTime(Math.max(0, Math.min(rect.width, x)));
+      const newTime = xToTime(Math.max(0, Math.min(rect.width, x)), rect.width);
       const duration = audioStore.duration || localAudioBuffer.value?.duration || 0;
       const clampedTime = Math.max(0, Math.min(duration, newTime));
       
@@ -715,7 +717,7 @@ function handleCanvasTouchEnd(e: TouchEvent) {
     if (!changedTouch) return;
     
     const x = changedTouch.clientX - rect.left;
-    const touchedTime = xToTime(x);
+    const touchedTime = xToTime(x, rect.width);
     const clampedTime = Math.max(0, Math.min(audioStore.duration || 0, touchedTime));
     
     const nearbyBeat = findNearbyBeat(clampedTime, 0.12);
