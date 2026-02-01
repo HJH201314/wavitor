@@ -2,12 +2,22 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { storageManager } from '../utils/storage';
 
+// ECG reference data
+export interface ECGReference {
+  fileId: string // Unique identifier for ECG file
+  fileName: string
+  beats: number[] // R-peak timestamps (absolute time relative to main audio)
+  addedAt: number
+  ecgStartTime?: number // ECG file start time relative to main audio (in seconds)
+}
+
 // Workspace data for a single audio file
 export interface WorkspaceData {
   fileId: string // Unique identifier (filename + size + lastModified)
   fileName: string
   beats: number[] // Unified beats array (no distinction between manual and detected)
   bpmDetected: boolean // Flag to indicate if BPM has been detected for this file
+  ecgReferences: ECGReference[] // Multiple ECG references
   history: HistoryEntry[]
   historyIndex: number
   createdAt: number
@@ -101,6 +111,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           fileName: file.name,
           beats: [],
           bpmDetected: false,
+          ecgReferences: [],
           history: [],
           historyIndex: -1,
           createdAt: Date.now(),
@@ -109,6 +120,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         
         // Save initial state to history
         addToHistory(workspace, '初始状态');
+      } else {
+        // Ensure ecgReferences exists for old workspaces
+        if (!workspace.ecgReferences) {
+          workspace.ecgReferences = [];
+        }
       }
       
       workspaces.value.set(fileId, workspace);
@@ -313,6 +329,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function deleteWorkspace(fileId: string): Promise<boolean> {
     const isCurrentWorkspace = currentFileId.value === fileId;
     
+    // Get workspace to retrieve ECG references before deleting
+    const workspace = workspaces.value.get(fileId);
+    
     // Delete from memory
     workspaces.value.delete(fileId);
     
@@ -325,6 +344,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     
     // Delete from storage
     try {
+      // Delete all ECG reference files first
+      if (workspace?.ecgReferences && workspace.ecgReferences.length > 0) {
+        console.log(`Deleting ${workspace.ecgReferences.length} ECG files for workspace: ${fileId}`);
+        for (const ecgRef of workspace.ecgReferences) {
+          try {
+            await storageManager.deleteAudioFile(ecgRef.fileId);
+            console.log(`Deleted ECG file: ${ecgRef.fileId}`);
+          } catch (error) {
+            console.error(`Failed to delete ECG file ${ecgRef.fileId}:`, error);
+          }
+        }
+      }
+      
+      // Delete workspace metadata and main audio file
       await storageManager.deleteWorkspace(fileId);
       await storageManager.deleteAudioFile(fileId);
       console.log(`Deleted workspace and audio file: ${fileId}`);
@@ -356,10 +389,101 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       fileId: ws.fileId,
       fileName: ws.fileName,
       beatCount: ws.beats.length,
+      ecgCount: ws.ecgReferences?.length || 0,
       lastModified: ws.lastModified,
       isCurrent: ws.fileId === currentFileId.value,
     })).sort((a, b) => b.lastModified - a.lastModified);
   });
+
+  // Add ECG reference to current workspace
+  async function addECGReference(ecgRef: ECGReference): Promise<boolean> {
+    const workspace = currentWorkspace.value;
+    if (!workspace) return false;
+    
+    // Ensure ecgReferences exists (for old workspaces)
+    if (!workspace.ecgReferences) {
+      workspace.ecgReferences = [];
+    }
+    
+    // Check if this ECG is already added
+    const exists = workspace.ecgReferences.some(ref => ref.fileId === ecgRef.fileId);
+    if (exists) {
+      console.log('ECG reference already exists');
+      return false;
+    }
+    
+    workspace.ecgReferences.push(ecgRef);
+    workspace.lastModified = Date.now();
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace);
+      console.log(`Added ECG reference: ${ecgRef.fileName}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to save workspace with ECG reference:', error);
+      return false;
+    }
+  }
+
+  // Remove ECG reference from current workspace
+  async function removeECGReference(ecgFileId: string): Promise<boolean> {
+    const workspace = currentWorkspace.value;
+    if (!workspace) return false;
+    
+    // Ensure ecgReferences exists
+    if (!workspace.ecgReferences) {
+      workspace.ecgReferences = [];
+    }
+    
+    const index = workspace.ecgReferences.findIndex(ref => ref.fileId === ecgFileId);
+    if (index === -1) {
+      console.log('ECG reference not found');
+      return false;
+    }
+    
+    workspace.ecgReferences.splice(index, 1);
+    workspace.lastModified = Date.now();
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace);
+      console.log(`Removed ECG reference: ${ecgFileId}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to save workspace after removing ECG reference:', error);
+      return false;
+    }
+  }
+
+  // Update ECG beats in a reference
+  async function updateECGBeats(ecgFileId: string, beats: number[]): Promise<boolean> {
+    const workspace = currentWorkspace.value;
+    if (!workspace) return false;
+    
+    // Ensure ecgReferences exists
+    if (!workspace.ecgReferences) {
+      workspace.ecgReferences = [];
+    }
+    
+    const ecgRef = workspace.ecgReferences.find(ref => ref.fileId === ecgFileId);
+    if (!ecgRef) {
+      console.log('ECG reference not found');
+      return false;
+    }
+    
+    ecgRef.beats = [...beats];
+    workspace.lastModified = Date.now();
+    
+    // Persist to storage
+    try {
+      await storageManager.saveWorkspace(workspace);
+      return true;
+    } catch (error) {
+      console.error('Failed to save workspace with updated ECG beats:', error);
+      return false;
+    }
+  }
 
   return {
     workspaces,
@@ -383,5 +507,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     deleteWorkspace,
     clearAllWorkspaces,
     workspaceSummaries,
+    addECGReference,
+    removeECGReference,
+    updateECGBeats,
   };
 });

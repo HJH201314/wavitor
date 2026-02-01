@@ -103,7 +103,7 @@ onUnmounted(() => {
   <div 
     v-if="audioStore.audioUrl"
     ref="containerRef"
-    class="bg-white rounded-xl p-6 shadow-sm"
+    class="bg-white rounded-xl p-4 md:p-6 shadow-sm max-w-full overflow-hidden"
   >
     <h3 class="text-sm font-medium text-gray-500 mb-4">
       频谱图
@@ -111,8 +111,8 @@ onUnmounted(() => {
     
     <canvas
       ref="canvasRef"
-      :style="{ width: canvasWidth + 'px', height: canvasHeight + 'px' }"
-      class="w-full bg-gray-50 rounded-lg"
+      :style="{ width: '100%', height: canvasHeight + 'px' }"
+      class="w-full bg-gray-50 rounded-lg max-w-full"
     />
     
     <p

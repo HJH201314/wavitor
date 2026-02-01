@@ -105,9 +105,9 @@ const canRedetect = computed(() => {
 </script>
 
 <template>
-  <div class="bg-white rounded-xl p-4 shadow-sm space-y-3">
+  <div class="bg-white rounded-xl p-4 shadow-sm space-y-3 max-w-full overflow-hidden">
     <!-- Main Header with inline controls -->
-    <div class="flex items-center justify-between gap-4">
+    <div class="flex items-center justify-between gap-2 md:gap-4 flex-wrap">
       <div class="flex items-center gap-2 flex-shrink-0">
         <svg
           class="w-4 h-4 text-gray-500"
@@ -126,12 +126,12 @@ const canRedetect = computed(() => {
       </div>
 
       <!-- Strategy Selector -->
-      <div class="flex items-center gap-2 flex-1">
-        <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+      <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+        <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1 flex-shrink-0">
           <button
             v-for="strategy in strategies"
             :key="strategy.value"
-            class="px-3 py-1 text-xs font-medium rounded-md transition-all"
+            class="px-2 md:px-3 py-1 text-xs font-medium rounded-md transition-all whitespace-nowrap"
             :class="currentStrategy === strategy.value 
               ? 'bg-white text-blue-600 shadow-sm' 
               : 'text-gray-600 hover:text-gray-900'"
@@ -145,17 +145,17 @@ const canRedetect = computed(() => {
         <!-- BPM Info -->
         <div
           v-if="audioStore.bpmInfo && !audioStore.isDetectingBPM"
-          class="flex items-center gap-3 text-xs ml-2"
+          class="flex items-center gap-2 md:gap-3 text-xs flex-wrap"
         >
-          <span class="text-gray-500">
+          <span class="text-gray-500 whitespace-nowrap">
             <span class="font-semibold text-blue-600">{{ audioStore.bpmInfo.bpm }}</span> BPM
           </span>
-          <span class="text-gray-400">·</span>
-          <span class="text-gray-500">
+          <span class="text-gray-400 hidden sm:inline">·</span>
+          <span class="text-gray-500 whitespace-nowrap">
             <span class="font-semibold text-green-600">{{ audioStore.bpmInfo.beats.length }}</span> 拍
           </span>
-          <span class="text-gray-400">·</span>
-          <span class="text-gray-500">
+          <span class="text-gray-400 hidden sm:inline">·</span>
+          <span class="text-gray-500 whitespace-nowrap">
             <span class="font-semibold text-purple-600">{{ Math.round(audioStore.bpmInfo.confidence * 100) }}%</span>
           </span>
         </div>
@@ -163,10 +163,10 @@ const canRedetect = computed(() => {
         <!-- Detection Status -->
         <div
           v-if="audioStore.isDetectingBPM"
-          class="flex items-center gap-1.5 text-xs text-gray-600 ml-2"
+          class="flex items-center gap-1.5 text-xs text-gray-600"
         >
           <svg
-            class="w-3.5 h-3.5 animate-spin text-blue-500"
+            class="w-3.5 h-3.5 animate-spin text-blue-500 flex-shrink-0"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -178,8 +178,8 @@ const canRedetect = computed(() => {
               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
             />
           </svg>
-          <span>{{ audioStore.detectionStage || '检测中' }}...</span>
-          <span v-if="audioStore.detectionProgress > 0" class="text-gray-400">
+          <span class="truncate">{{ audioStore.detectionStage || '检测中' }}...</span>
+          <span v-if="audioStore.detectionProgress > 0" class="text-gray-400 flex-shrink-0">
             {{ Math.round(audioStore.detectionProgress * 100) }}%
           </span>
         </div>
@@ -234,6 +234,9 @@ const canRedetect = computed(() => {
       class="border-t border-gray-100 pt-3 space-y-3 animate-fadeIn"
     >
       <div class="text-xs text-gray-500 mb-2">心音检测高级选项</div>
+      
+      <!-- ECG Uploader -->
+      <slot name="ecg-uploader"></slot>
       
       <!-- S1/S2 Mode Selection -->
       <div class="space-y-1.5">

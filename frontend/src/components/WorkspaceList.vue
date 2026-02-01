@@ -7,6 +7,11 @@ import { storageManager } from '../utils/storage';
 const workspaceStore = useWorkspaceStore();
 const audioStore = useAudioStore();
 
+// Emit event when workspace is selected (for mobile bottom sheet)
+const emit = defineEmits<{
+  workspaceSelected: []
+}>();
+
 const workspaces = computed(() => workspaceStore.workspaceSummaries);
 const storageUsage = ref(0);
 const storageQuota = ref(0);
@@ -111,10 +116,15 @@ function handleClearAll() {
 }
 
 async function switchWorkspace(fileId: string) {
-  if (workspaceStore.currentFileId === fileId) return;
+  if (workspaceStore.currentFileId === fileId) {
+    emit('workspaceSelected');
+    return;
+  }
   
   const success = await audioStore.loadWorkspaceById(fileId);
-  if (!success) {
+  if (success) {
+    emit('workspaceSelected');
+  } else {
     alert('无法加载工作区，音频文件可能已被删除');
   }
 }

@@ -1745,6 +1745,10 @@ function calculateLocalBPM(
 
   // Calculate BPM using sliding window of beats
   const windowBeats = 4;
+  
+  // Reasonable BPM limits to prevent extreme outliers
+  const MIN_INTERVAL = 0.1;  // 100ms -> max 600 BPM
+  const MAX_BPM = 500;       // Cap at 500 BPM to catch anomalies
 
   for (let i = 0; i <= beats.length - windowBeats; i++) {
     const startTime = beats[i];
@@ -1752,14 +1756,21 @@ function calculateLocalBPM(
     const numIntervals = windowBeats - 1;
     const avgInterval = (endTime - startTime) / numIntervals;
     
-    if (avgInterval > 0) {
+    // Validate interval before calculating BPM
+    if (avgInterval >= MIN_INTERVAL) {
       const bpm = 60 / avgInterval;
-      const midTime = (startTime + endTime) / 2;
       
-      localBPMs.push({
-        time: midTime,
-        bpm: Math.round(bpm),
-      });
+      // Only accept reasonable BPM values
+      if (bpm <= MAX_BPM) {
+        const midTime = (startTime + endTime) / 2;
+        
+        localBPMs.push({
+          time: midTime,
+          bpm: Math.round(bpm),
+        });
+      } else {
+        console.warn(`[HeartSound] Skipping abnormal local BPM: ${Math.round(bpm)} at ${startTime.toFixed(2)}s`);
+      }
     }
   }
 
@@ -1781,8 +1792,20 @@ function calculateAverageBPM(beats: number[]): number {
   intervals.sort((a, b) => a - b);
   const medianInterval = intervals[Math.floor(intervals.length / 2)];
 
-  if (medianInterval > 0) {
-    return 60 / medianInterval;
+  // Reasonable limits to prevent extreme outliers
+  const MIN_INTERVAL = 0.1;  // 100ms -> max 600 BPM
+  const MAX_BPM = 500;       // Cap at 500 BPM to catch anomalies
+
+  if (medianInterval >= MIN_INTERVAL) {
+    const bpm = 60 / medianInterval;
+    
+    // Validate calculated BPM
+    if (bpm <= MAX_BPM) {
+      return bpm;
+    } else {
+      console.warn(`[HeartSound] Abnormal average BPM detected: ${Math.round(bpm)}, capping at ${MAX_BPM}`);
+      return MAX_BPM;
+    }
   }
 
   return 0;

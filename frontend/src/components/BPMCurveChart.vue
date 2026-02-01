@@ -463,25 +463,24 @@ onUnmounted(() => {
   <div 
     v-if="audioStore.bpmInfo && audioStore.bpmInfo.localBPMs.length > 0"
     ref="containerRef"
-    class="bg-white rounded-xl p-6 shadow-sm"
+    class="bg-white rounded-xl p-4 md:p-6 shadow-sm max-w-full overflow-hidden"
   >
-    <div class="mb-4 flex items-center justify-between">
-      <div class="flex items-center gap-3">
+    <div class="mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div class="flex items-center gap-2 md:gap-3 flex-wrap">
         <h3 class="text-sm font-medium text-gray-500">
           BPM 时间曲线
         </h3>
-        <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">
+        <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded whitespace-nowrap">
           {{ audioStore.bpmInfo.localBPMs.length }} 个采样点
         </span>
-      </div>
-      
-      <div class="flex items-center gap-3">
-        <div class="text-xs text-gray-400">
+        <div class="text-xs text-gray-400 whitespace-nowrap">
           范围: {{ bpmRange.min }} - {{ bpmRange.max }} BPM
         </div>
-        
+      </div>
+      
+      <div class="flex items-center gap-2 md:gap-3 flex-wrap">
         <!-- 高度调整控件 -->
-        <div class="flex items-center gap-1.5 border-l pl-3 border-gray-200">
+        <div class="flex items-center gap-1.5 border-l pl-2 md:pl-3 border-gray-200">
           <button
             @click="adjustHeight(-50)"
             :disabled="canvasHeight <= minHeight"
@@ -492,7 +491,7 @@ onUnmounted(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
             </svg>
           </button>
-          <span class="text-xs text-gray-500 min-w-[3rem] text-center">{{ canvasHeight }}px</span>
+          <span class="text-xs text-gray-500 min-w-[2.5rem] md:min-w-[3rem] text-center">{{ canvasHeight }}px</span>
           <button
             @click="adjustHeight(50)"
             :disabled="canvasHeight >= maxHeight"
@@ -508,13 +507,14 @@ onUnmounted(() => {
         <!-- 导出按钮 -->
         <button
           @click="exportAsImage"
-          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          class="flex items-center gap-1.5 px-2 md:px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
           title="导出为图片"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
-          <span>导出图片</span>
+          <span class="hidden sm:inline">导出图片</span>
+          <span class="inline sm:hidden">导出</span>
         </button>
       </div>
     </div>
